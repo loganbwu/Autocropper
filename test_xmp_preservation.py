@@ -1,75 +1,59 @@
 #!/usr/bin/env python3
 """Test script to verify XMP preservation functionality"""
 
+import re
 import tempfile
 from pathlib import Path
-import xml.etree.ElementTree as ET
 
-# Simulate the write_xmp function
+
+def has_existing_crop(xmp_path: Path):
+    """Check if XMP file exists and already has crop data"""
+    if not xmp_path.exists():
+        return False
+    
+    try:
+        content = xmp_path.read_text()
+        # Look for HasCrop tag with True value
+        return bool(re.search(r'<crs:HasCrop>\s*(True|true|1)\s*</crs:HasCrop>', content))
+    except Exception:
+        return False
+
+
 def write_xmp(xmp_path: Path, left: float, top: float, right: float, bottom: float):
     """Simplified version of write_xmp for testing"""
     
-    # Define namespaces
-    namespaces = {
-        'x': 'adobe:ns:meta/',
-        'rdf': 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
-        'crs': 'http://ns.adobe.com/camera-raw-settings/1.0/'
+    crop_tags = {
+        'HasCrop': 'True',
+        'CropLeft': f'{left:.6f}',
+        'CropTop': f'{top:.6f}',
+        'CropRight': f'{right:.6f}',
+        'CropBottom': f'{bottom:.6f}'
     }
 
-    # Register namespaces for proper serialization
-    for prefix, uri in namespaces.items():
-        ET.register_namespace(prefix, uri)
-
     if xmp_path.exists():
-        # Read and parse existing XMP
-        tree = ET.parse(xmp_path)
-        root = tree.getroot()
-
-        # Find or create the RDF Description element with crs namespace
-        rdf = root.find('.//rdf:RDF', namespaces)
-        if rdf is None:
-            # Create RDF structure if it doesn't exist
-            rdf = ET.SubElement(root, f"{{{namespaces['rdf']}}}RDF")
-        
-        # Find first Description element (there may be multiple)
-        desc = rdf.find('.//rdf:Description', namespaces)
-        if desc is None:
-            # Create new Description element
-            desc = ET.SubElement(rdf, f"{{{namespaces['rdf']}}}Description")
-            desc.set(f"{{{namespaces['rdf']}}}about", "")
-        
-        # Ensure crs namespace is declared on Description element
-        desc.set(f"{{http://www.w3.org/2000/xmlns/}}crs", namespaces['crs'])
-
-        # Update or create crop tags
-        crop_tags = {
-            f"{{{namespaces['crs']}}}HasCrop": "True",
-            f"{{{namespaces['crs']}}}CropLeft": f"{left:.6f}",
-            f"{{{namespaces['crs']}}}CropTop": f"{top:.6f}",
-            f"{{{namespaces['crs']}}}CropRight": f"{right:.6f}",
-            f"{{{namespaces['crs']}}}CropBottom": f"{bottom:.6f}"
-        }
-
-        for tag, value in crop_tags.items():
-            elem = desc.find(f".//{tag}", namespaces)
-            if elem is not None:
-                desc.remove(elem)
-            new_elem = ET.SubElement(desc, tag)
-            new_elem.text = value
-
-        # Write back with XML declaration and xpacket wrapper
-        tree.write(xmp_path, encoding='utf-8', xml_declaration=True)
-        
-        # Add xpacket processing instructions
+        # Read existing XMP and update crop tags using regex
         content = xmp_path.read_text()
-        if not content.startswith('<?xpacket'):
-            content = f'<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n{content}'
-        if not content.endswith('<?xpacket end="w"?>'):
-            content = f'{content.rstrip()}\n<?xpacket end="w"?>'
+        
+        for tag, value in crop_tags.items():
+            # Pattern to match existing tag with any content
+            pattern = rf'<crs:{tag}>.*?</crs:{tag}>'
+            replacement = f'<crs:{tag}>{value}</crs:{tag}>'
+            
+            if re.search(pattern, content):
+                # Tag exists, replace it
+                content = re.sub(pattern, replacement, content)
+            else:
+                # Tag doesn't exist, insert it before the closing Description tag
+                desc_close = '</rdf:Description>'
+                if desc_close in content:
+                    # Insert new tag before closing Description
+                    new_tag = f'   <crs:{tag}>{value}</crs:{tag}>\n  '
+                    content = content.replace(desc_close, new_tag + desc_close)
+        
         xmp_path.write_text(content)
 
     else:
-        # Create new XMP file with crop data (original behavior)
+        # Create new XMP file with crop data
         xmp = f"""<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -173,6 +157,37 @@ def test_updating_existing_crop():
         print("✓ Old crop values removed")
 
 
+def test_has_existing_crop():
+    """Test the has_existing_crop detection function"""
+    print("\n=== Test 4: Detecting existing crops ===")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xmp_path = Path(tmpdir) / "test.xmp"
+        
+        # Test 1: No XMP file
+        assert not has_existing_crop(xmp_path)
+        print("✓ Returns False when XMP doesn't exist")
+        
+        # Test 2: XMP without crop
+        xmp_no_crop = """<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">
+   <crs:Temperature>5500</crs:Temperature>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"""
+        xmp_path.write_text(xmp_no_crop)
+        assert not has_existing_crop(xmp_path)
+        print("✓ Returns False when XMP exists but has no crop")
+        
+        # Test 3: XMP with crop
+        write_xmp(xmp_path, 0.1, 0.2, 0.9, 0.8)
+        assert has_existing_crop(xmp_path)
+        print("✓ Returns True when XMP has crop data")
+
+
 def main():
     print("Testing XMP Preservation Functionality")
     print("=" * 50)
@@ -181,6 +196,7 @@ def main():
         test_new_xmp()
         test_existing_xmp_with_other_metadata()
         test_updating_existing_crop()
+        test_has_existing_crop()
         
         print("\n" + "=" * 50)
         print("✅ ALL TESTS PASSED!")

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
 import argparse
+import re
 import subprocess
 import tempfile
 from pathlib import Path
-import xml.etree.ElementTree as ET
 
 import cv2
 import numpy as np
@@ -140,6 +140,21 @@ def enforce_aspect_ratio(x1, y1, x2, y2, w, h):
 
 
 
+def has_existing_crop(cr3_path: Path):
+    """Check if XMP file exists and already has crop data"""
+    xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
+    
+    if not xmp_path.exists():
+        return False
+    
+    try:
+        content = xmp_path.read_text()
+        # Look for HasCrop tag with True value
+        return bool(re.search(r'<crs:HasCrop>\s*(True|true|1)\s*</crs:HasCrop>', content))
+    except Exception:
+        return False
+
+
 def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
     xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
 
@@ -148,67 +163,39 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
     right = x2 / w
     bottom = y2 / h
 
-    # Define namespaces
-    namespaces = {
-        'x': 'adobe:ns:meta/',
-        'rdf': 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
-        'crs': 'http://ns.adobe.com/camera-raw-settings/1.0/'
+    crop_tags = {
+        'HasCrop': 'True',
+        'CropLeft': f'{left:.6f}',
+        'CropTop': f'{top:.6f}',
+        'CropRight': f'{right:.6f}',
+        'CropBottom': f'{bottom:.6f}'
     }
 
-    # Register namespaces for proper serialization
-    for prefix, uri in namespaces.items():
-        ET.register_namespace(prefix, uri)
-
     if xmp_path.exists():
-        # Read and parse existing XMP
-        tree = ET.parse(xmp_path)
-        root = tree.getroot()
-
-        # Find or create the RDF Description element with crs namespace
-        rdf = root.find('.//rdf:RDF', namespaces)
-        if rdf is None:
-            # Create RDF structure if it doesn't exist
-            rdf = ET.SubElement(root, f"{{{namespaces['rdf']}}}RDF")
-        
-        # Find first Description element (there may be multiple)
-        desc = rdf.find('.//rdf:Description', namespaces)
-        if desc is None:
-            # Create new Description element
-            desc = ET.SubElement(rdf, f"{{{namespaces['rdf']}}}Description")
-            desc.set(f"{{{namespaces['rdf']}}}about", "")
-        
-        # Ensure crs namespace is declared on Description element
-        desc.set(f"{{http://www.w3.org/2000/xmlns/}}crs", namespaces['crs'])
-
-        # Update or create crop tags
-        crop_tags = {
-            f"{{{namespaces['crs']}}}HasCrop": "True",
-            f"{{{namespaces['crs']}}}CropLeft": f"{left:.6f}",
-            f"{{{namespaces['crs']}}}CropTop": f"{top:.6f}",
-            f"{{{namespaces['crs']}}}CropRight": f"{right:.6f}",
-            f"{{{namespaces['crs']}}}CropBottom": f"{bottom:.6f}"
-        }
-
-        for tag, value in crop_tags.items():
-            elem = desc.find(f".//{tag}", namespaces)
-            if elem is not None:
-                desc.remove(elem)
-            new_elem = ET.SubElement(desc, tag)
-            new_elem.text = value
-
-        # Write back with XML declaration and xpacket wrapper
-        tree.write(xmp_path, encoding='utf-8', xml_declaration=True)
-        
-        # Add xpacket processing instructions
+        # Read existing XMP and update crop tags using regex
         content = xmp_path.read_text()
-        if not content.startswith('<?xpacket'):
-            content = f'<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n{content}'
-        if not content.endswith('<?xpacket end="w"?>'):
-            content = f'{content.rstrip()}\n<?xpacket end="w"?>'
+        
+        for tag, value in crop_tags.items():
+            # Pattern to match existing tag with any content
+            pattern = rf'<crs:{tag}>.*?</crs:{tag}>'
+            replacement = f'<crs:{tag}>{value}</crs:{tag}>'
+            
+            if re.search(pattern, content):
+                # Tag exists, replace it
+                content = re.sub(pattern, replacement, content)
+            else:
+                # Tag doesn't exist, insert it before the closing Description tag
+                # Find the last occurrence of closing Description tag
+                desc_close = '</rdf:Description>'
+                if desc_close in content:
+                    # Insert new tag before closing Description
+                    new_tag = f'   <crs:{tag}>{value}</crs:{tag}>\n  '
+                    content = content.replace(desc_close, new_tag + desc_close)
+        
         xmp_path.write_text(content)
 
     else:
-        # Create new XMP file with crop data (original behavior)
+        # Create new XMP file with crop data
         xmp = f"""<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -227,7 +214,11 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
         xmp_path.write_text(xmp)
 
 
-def process_cr3(model, cr3_path: Path):
+def process_cr3(model, cr3_path: Path, force: bool = False):
+    # Skip if already has a crop (unless force flag is set)
+    if not force and has_existing_crop(cr3_path):
+        return False
+    
     with tempfile.TemporaryDirectory() as tmp:
         preview = Path(tmp) / "preview.jpg"
         extract_preview_jpeg(cr3_path, preview)
@@ -235,13 +226,14 @@ def process_cr3(model, cr3_path: Path):
         boxes, keypoints, w, h = detect_people_with_keypoints(model, preview)
 
         if not boxes and not keypoints:
-            return
+            return False
 
         x1, y1, x2, y2 = merged_envelope(boxes, keypoints)
         x1, y1, x2, y2 = expand_with_margin(x1, y1, x2, y2, w, h)
         x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
 
         write_xmp(cr3_path, x1, y1, x2, y2, w, h)
+        return True
 
 
 def find_cr3_files(root: Path):
@@ -259,6 +251,11 @@ def main():
         type=Path,
         help="Folder containing CR3 files (default: ~/Pictures)",
     )
+    parser.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Force re-crop even if XMP already has crop data",
+    )
 
     args = parser.parse_args()
     root = args.path.expanduser().resolve()
@@ -272,8 +269,28 @@ def main():
 
     model = YOLO(MODEL_NAME)
 
+    processed = 0
+    skipped = 0
+    no_people = 0
+
     for cr3 in tqdm(cr3_files, desc="Auto-cropping CR3s", unit="image"):
-        process_cr3(model, cr3)
+        if not args.force and has_existing_crop(cr3):
+            skipped += 1
+            continue
+        
+        result = process_cr3(model, cr3, force=args.force)
+        if result:
+            processed += 1
+        else:
+            no_people += 1
+
+    print(f"\n✓ Processed: {processed}")
+    if skipped > 0:
+        print(f"⊘ Skipped (already cropped): {skipped}")
+    if no_people > 0:
+        print(f"⊘ Skipped (no people detected): {no_people}")
+    if skipped > 0:
+        print(f"\nTip: Use --force to re-crop files that already have crops")
 
 
 if __name__ == "__main__":

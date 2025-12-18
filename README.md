@@ -14,10 +14,15 @@ Auto-crop CR3 RAW files using YOLO pose detection and write Lightroom-compatible
 
 ```bash
 # Process all CR3 files in default location (~/Pictures)
+# Skips files that already have crops
 python auto_crop_cr3.py
 
 # Process CR3 files in a specific directory
 python auto_crop_cr3.py /path/to/photos
+
+# Force re-crop even if files already have crops
+python auto_crop_cr3.py --force
+python auto_crop_cr3.py -f /path/to/photos
 ```
 
 ## How It Works
@@ -29,14 +34,24 @@ python auto_crop_cr3.py /path/to/photos
 5. Enforces original aspect ratio while maintaining all subjects in frame
 6. Writes or updates XMP sidecar file with crop metadata
 
-## XMP Preservation (Added: 2025-12-19)
+## Smart Skip & XMP Preservation
 
-The script now intelligently handles existing XMP files:
+### Skip Existing Crops (Default Behavior)
+By default, the script **skips photos that already have crop data** in their XMP files. This prevents accidentally overwriting manual crops you've made in Lightroom. Use the `--force` flag to override this behavior.
+
+### XMP Metadata Preservation
+The script intelligently handles existing XMP files:
 - **If XMP exists**: Parses the existing file and only updates the 5 crop-related tags (`HasCrop`, `CropLeft`, `CropTop`, `CropRight`, `CropBottom`)
 - **If XMP doesn't exist**: Creates a new XMP file with crop data
 - **All other metadata preserved**: Temperature, exposure, contrast, keywords, ratings, etc. remain untouched
 
 This ensures you can run auto-cropping on photos that have already been edited in Lightroom without losing your adjustments.
+
+### Summary Output
+After processing, the script displays:
+- Number of files successfully processed
+- Number of files skipped (already had crops)
+- Number of files skipped (no people detected)
 
 ## Configuration
 

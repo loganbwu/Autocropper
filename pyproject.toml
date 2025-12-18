@@ -1,0 +1,28 @@
+[project]
+name = "autocropper"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Logan Wu", email = "loganbwu@gmail.com" }
+]
+dependencies = [
+    "ultralytics>=8.3.239",
+    "pillow>=12.0.0",
+    "tqdm>=4.67.1",
+]
+readme = "README.md"
+requires-python = ">= 3.8"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.rye]
+managed = true
+dev-dependencies = []
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autocropper"]
