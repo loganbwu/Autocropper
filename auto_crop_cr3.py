@@ -140,6 +140,16 @@ def enforce_aspect_ratio(x1, y1, x2, y2, w, h):
 
 
 
+def select_main_person(boxes, keypoints):
+    """Select only the largest detected person by bounding box area."""
+    if not boxes:
+        return boxes, keypoints
+    areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in boxes]
+    idx = int(np.argmax(areas))
+    main_kps = [keypoints[idx]] if idx < len(keypoints) else []
+    return [boxes[idx]], main_kps
+
+
 def has_existing_crop(cr3_path: Path):
     """Check if XMP file exists and already has crop data"""
     xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
@@ -214,11 +224,11 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
         xmp_path.write_text(xmp)
 
 
-def process_cr3(model, cr3_path: Path, force: bool = False):
+def process_cr3(model, cr3_path: Path, force: bool = False, all_people: bool = False):
     # Skip if already has a crop (unless force flag is set)
     if not force and has_existing_crop(cr3_path):
         return False
-    
+
     with tempfile.TemporaryDirectory() as tmp:
         preview = Path(tmp) / "preview.jpg"
         extract_preview_jpeg(cr3_path, preview)
@@ -227,6 +237,9 @@ def process_cr3(model, cr3_path: Path, force: bool = False):
 
         if not boxes and not keypoints:
             return False
+
+        if not all_people:
+            boxes, keypoints = select_main_person(boxes, keypoints)
 
         x1, y1, x2, y2 = merged_envelope(boxes, keypoints)
         x1, y1, x2, y2 = expand_with_margin(x1, y1, x2, y2, w, h)
@@ -256,6 +269,11 @@ def main():
         action="store_true",
         help="Force re-crop even if XMP already has crop data",
     )
+    parser.add_argument(
+        "-a", "--all-people",
+        action="store_true",
+        help="Crop to include all detected people (default: crop to main person only)",
+    )
 
     args = parser.parse_args()
     root = args.path.expanduser().resolve()
@@ -278,7 +296,7 @@ def main():
             skipped += 1
             continue
         
-        result = process_cr3(model, cr3, force=args.force)
+        result = process_cr3(model, cr3, force=args.force, all_people=args.all_people)
         if result:
             processed += 1
         else:

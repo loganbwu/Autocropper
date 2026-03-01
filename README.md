@@ -14,11 +14,15 @@ Auto-crop CR3 RAW files using YOLO pose detection and write Lightroom-compatible
 
 ```bash
 # Process all CR3 files in default location (~/Pictures)
-# Skips files that already have crops
+# Skips files that already have crops, crops to main person only
 python auto_crop_cr3.py
 
 # Process CR3 files in a specific directory
 python auto_crop_cr3.py /path/to/photos
+
+# Crop to include all detected people instead of just the main subject
+python auto_crop_cr3.py --all-people
+python auto_crop_cr3.py -a /path/to/photos
 
 # Force re-crop even if files already have crops
 python auto_crop_cr3.py --force
