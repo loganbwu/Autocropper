@@ -8,3 +8,14 @@ wheels/
 
 # venv
 .venv
+
+# macOS metadata
+.DS_Store
+
+# model weights
+*.pt
+*.pth
+*.onnx
+
+# Claude Code
+.claude/
