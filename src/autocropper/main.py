@@ -17,7 +17,7 @@ DETECTOR_MODEL = "PekingU/rtdetr_r50vd_coco_o365"
 POSE_MODEL = "usyd-community/vitpose-base-simple"
 CONFIDENCE = 0.3        # Person detection confidence threshold
 KEYPOINT_SCORE = 0.3    # Minimum keypoint confidence to include
-MARGIN_RATIO = 0.30     # 30% margin around merged box
+MARGIN_RATIO = 0.10     # 30% margin around merged box
 
 DEFAULT_ROOT = Path.home() / "Desktop/Test"
 
