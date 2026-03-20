@@ -19,7 +19,7 @@ CONFIDENCE = 0.3        # Person detection confidence threshold
 KEYPOINT_SCORE = 0.3    # Minimum keypoint confidence to include
 MARGIN_RATIO = 0.30     # 30% margin around merged box
 
-DEFAULT_ROOT = Path.home() / "Pictures"
+DEFAULT_ROOT = Path.home() / "Desktop/Test"
 
 # ----------------------------------------
 
@@ -202,6 +202,9 @@ def select_main_person(boxes, keypoints):
     return [boxes[idx]], main_kps
 
 
+CROP_TAGS = ('HasCrop', 'CropLeft', 'CropTop', 'CropRight', 'CropBottom')
+
+
 def has_existing_crop(cr3_path: Path):
     """Check if XMP file exists and already has crop data"""
     xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
@@ -211,8 +214,9 @@ def has_existing_crop(cr3_path: Path):
 
     try:
         content = xmp_path.read_text()
-        # Look for HasCrop tag with True value
-        return bool(re.search(r'<crs:HasCrop>\s*(True|true|1)\s*</crs:HasCrop>', content))
+        # Match both element form (<crs:HasCrop>True</crs:HasCrop>)
+        # and attribute form (crs:HasCrop="True") written by Lightroom
+        return bool(re.search(r'crs:HasCrop[=>"\s]*(True|true|1)', content))
     except Exception:
         return False
 
@@ -225,34 +229,26 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
     right = x2 / w
     bottom = y2 / h
 
-    crop_tags = {
-        'HasCrop': 'True',
-        'CropLeft': f'{left:.6f}',
-        'CropTop': f'{top:.6f}',
-        'CropRight': f'{right:.6f}',
-        'CropBottom': f'{bottom:.6f}'
-    }
+    crop_block = (
+        f'   <crs:HasCrop>True</crs:HasCrop>\n'
+        f'   <crs:CropLeft>{left:.6f}</crs:CropLeft>\n'
+        f'   <crs:CropTop>{top:.6f}</crs:CropTop>\n'
+        f'   <crs:CropRight>{right:.6f}</crs:CropRight>\n'
+        f'   <crs:CropBottom>{bottom:.6f}</crs:CropBottom>\n'
+    )
 
     if xmp_path.exists():
-        # Read existing XMP and update crop tags using regex
         content = xmp_path.read_text()
 
-        for tag, value in crop_tags.items():
-            # Pattern to match existing tag with any content
-            pattern = rf'<crs:{tag}>.*?</crs:{tag}>'
-            replacement = f'<crs:{tag}>{value}</crs:{tag}>'
+        # Strip all existing crop element tags from anywhere in the document
+        # (handles duplicates inserted by previous buggy runs)
+        for tag in CROP_TAGS:
+            content = re.sub(rf'\s*<crs:{tag}>.*?</crs:{tag}>', '', content)
 
-            if re.search(pattern, content):
-                # Tag exists, replace it
-                content = re.sub(pattern, replacement, content)
-            else:
-                # Tag doesn't exist, insert it before the closing Description tag
-                # Find the last occurrence of closing Description tag
-                desc_close = '</rdf:Description>'
-                if desc_close in content:
-                    # Insert new tag before closing Description
-                    new_tag = f'   <crs:{tag}>{value}</crs:{tag}>\n  '
-                    content = content.replace(desc_close, new_tag + desc_close)
+        # Insert crop block once, before the last </rdf:Description> (top-level block)
+        last_close = content.rfind('</rdf:Description>')
+        if last_close != -1:
+            content = content[:last_close] + crop_block + '  ' + content[last_close:]
 
         xmp_path.write_text(content)
 
