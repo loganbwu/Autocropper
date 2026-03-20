@@ -6,6 +6,7 @@ Auto-crop CR3 RAW files using AI pose detection and write Lightroom-compatible X
 
 - **AI-Powered Detection**: Uses RT-DETR for person detection and ViTPose for keypoint estimation (via HuggingFace)
 - **Smart Cropping**: Automatically calculates optimal crop based on detected keypoints and bounding boxes
+- **Instagram Safe Zone**: Ensures the subject fits within the central 5:4 region of the 3:2 crop, so the person is not cut off if the image is later cropped to 5:4 (landscape) or 4:5 (portrait) for Instagram
 - **Aspect Ratio Preservation**: Maintains original image aspect ratio in crops
 - **XMP Metadata Preservation**: Reads existing XMP sidecar files and only updates cropping tags, preserving all other metadata (e.g., colour corrections, ratings, keywords)
 - **Lightroom Compatible**: Generates XMP files that work seamlessly with Adobe Lightroom
@@ -55,7 +56,8 @@ autocrop -f /path/to/photos
 3. Runs ViTPose pose estimation to refine keypoint locations
 4. Calculates a merged bounding box around all detected people/keypoints
 5. Adds a configurable margin (default 10%) around the detection
-6. Enforces original aspect ratio while keeping all subjects in frame
+6. Expands the crop if needed so the subject fits within the Instagram 5:4 safe zone
+7. Enforces original aspect ratio while keeping all subjects in frame
 7. Writes or updates XMP sidecar file with crop metadata
 
 ## Smart Skip & XMP Preservation
@@ -79,6 +81,7 @@ Edit `src/autocropper/main.py` to adjust:
 - `CONFIDENCE`: Person detection confidence threshold (default: `0.3`)
 - `KEYPOINT_SCORE`: Minimum keypoint confidence to include (default: `0.3`)
 - `MARGIN_RATIO`: Margin around detected subjects (default: `0.10` = 10%)
+- `INSTAGRAM_RATIO`: Safe zone aspect ratio (default: `5/4`); the subject is guaranteed to fit within this ratio centred in the final crop
 - `DEFAULT_ROOT`: Default directory to process (default: `~/Desktop/Test`)
 
 ## Requirements

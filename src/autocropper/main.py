@@ -17,7 +17,8 @@ DETECTOR_MODEL = "PekingU/rtdetr_r50vd_coco_o365"
 POSE_MODEL = "usyd-community/vitpose-base-simple"
 CONFIDENCE = 0.3        # Person detection confidence threshold
 KEYPOINT_SCORE = 0.3    # Minimum keypoint confidence to include
-MARGIN_RATIO = 0.10     # 30% margin around merged box
+MARGIN_RATIO = 0.10     # Margin around merged box
+INSTAGRAM_RATIO = 5 / 4 # Instagram's widest feed crop (5:4 landscape / 4:5 portrait)
 
 DEFAULT_ROOT = Path.home() / "Desktop/Test"
 
@@ -144,6 +145,41 @@ def expand_with_margin(x1, y1, x2, y2, w, h):
     y1 = max(0, y1)
     x2 = min(w, x2)
     y2 = min(h, y2)
+
+    return x1, y1, x2, y2
+
+
+def expand_for_instagram_safe_zone(x1, y1, x2, y2, w, h):
+    """Expand the crop region so the person fits within Instagram's safe zone.
+
+    Instagram center-crops a 3:2 image to 5:4, removing W/12 from each side.
+    Instagram center-crops a 2:3 image to 4:5, removing H/12 from top and bottom.
+    In both cases the safe zone is 5/6 of the crop's constrained dimension.
+
+    To guarantee the person sits inside the safe zone, we pre-expand the
+    bounding box so that the eventual aspect-ratio enforcement produces a crop
+    that is large enough: safe-zone width (or height) >= person extent.
+    """
+    pw = x2 - x1
+    ph = y2 - y1
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+
+    if w >= h:
+        # Landscape: safe-zone width = INSTAGRAM_RATIO * crop_h >= pw
+        # Requires crop_h >= pw / INSTAGRAM_RATIO.
+        # enforce_aspect_ratio will set crop_h to the bounding-box height,
+        # so pre-expand height here if needed.
+        min_h = pw / INSTAGRAM_RATIO
+        if ph < min_h:
+            y1 = cy - min_h / 2
+            y2 = cy + min_h / 2
+    else:
+        # Portrait: safe-zone height = INSTAGRAM_RATIO * crop_w >= ph
+        min_w = ph / INSTAGRAM_RATIO
+        if pw < min_w:
+            x1 = cx - min_w / 2
+            x2 = cx + min_w / 2
 
     return x1, y1, x2, y2
 
@@ -291,6 +327,7 @@ def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = 
 
         x1, y1, x2, y2 = merged_envelope(boxes, keypoints)
         x1, y1, x2, y2 = expand_with_margin(x1, y1, x2, y2, w, h)
+        x1, y1, x2, y2 = expand_for_instagram_safe_zone(x1, y1, x2, y2, w, h)
         x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
 
         write_xmp(cr3_path, x1, y1, x2, y2, w, h)
