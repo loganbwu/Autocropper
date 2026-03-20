@@ -6,16 +6,18 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import cv2
 import numpy as np
-from ultralytics import YOLO
+import torch
+from PIL import Image
 from tqdm import tqdm
 
 # ---------------- CONFIG ----------------
 
-MODEL_NAME = "yolo11n-pose.pt"
-CONFIDENCE = 0.1
-MARGIN_RATIO = 0.30   # 30% margin around merged box
+DETECTOR_MODEL = "PekingU/rtdetr_r50vd_coco_o365"
+POSE_MODEL = "usyd-community/vitpose-base-simple"
+CONFIDENCE = 0.3        # Person detection confidence threshold
+KEYPOINT_SCORE = 0.3    # Minimum keypoint confidence to include
+MARGIN_RATIO = 0.30     # 30% margin around merged box
 
 DEFAULT_ROOT = Path.home() / "Pictures"
 
@@ -36,26 +38,76 @@ def extract_preview_jpeg(cr3_path: Path, out_jpg: Path):
     )
 
 
-def detect_people_with_keypoints(model, image_path: Path):
-    img = cv2.imread(str(image_path))
-    h, w = img.shape[:2]
+def load_models():
+    from transformers import AutoProcessor, RTDetrForObjectDetection, VitPoseForPoseEstimation
 
-    results = model(str(image_path), conf=CONFIDENCE, verbose=False)[0]
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
 
-    boxes = []
+    print(f"Loading models on {device}...")
+
+    det_processor = AutoProcessor.from_pretrained(DETECTOR_MODEL)
+    det_model = RTDetrForObjectDetection.from_pretrained(DETECTOR_MODEL).to(device).eval()
+
+    pose_processor = AutoProcessor.from_pretrained(POSE_MODEL)
+    pose_model = VitPoseForPoseEstimation.from_pretrained(POSE_MODEL).to(device).eval()
+
+    return det_processor, det_model, pose_processor, pose_model
+
+
+def detect_people_with_keypoints(models, image_path: Path):
+    det_processor, det_model, pose_processor, pose_model = models
+    device = next(det_model.parameters()).device
+
+    image = Image.open(image_path).convert("RGB")
+    w, h = image.size
+
+    # Stage 1: Person detection via RT-DETR
+    det_inputs = det_processor(images=image, return_tensors="pt").to(device)
+    with torch.no_grad():
+        det_outputs = det_model(**det_inputs)
+
+    det_results = det_processor.post_process_object_detection(
+        det_outputs,
+        target_sizes=torch.tensor([(h, w)]),
+        threshold=CONFIDENCE,
+    )
+
+    person_label = next(
+        k for k, v in det_model.config.id2label.items() if v.lower() == "person"
+    )
+    mask = det_results[0]["labels"] == person_label
+    boxes_xyxy = det_results[0]["boxes"][mask].cpu().numpy()
+
+    if len(boxes_xyxy) == 0:
+        return [], [], w, h
+
+    # Convert VOC (x1,y1,x2,y2) → COCO (x1,y1,w,h) for ViTPose processor
+    boxes_xywh = boxes_xyxy.copy()
+    boxes_xywh[:, 2] -= boxes_xywh[:, 0]
+    boxes_xywh[:, 3] -= boxes_xywh[:, 1]
+
+    # Stage 2: Pose estimation via ViTPose
+    pose_inputs = pose_processor(image, boxes=[boxes_xywh], return_tensors="pt")
+    pose_inputs = {k: v.to(device) for k, v in pose_inputs.items()}
+    with torch.no_grad():
+        pose_outputs = pose_model(**pose_inputs)
+
+    pose_results = pose_processor.post_process_pose_estimation(
+        pose_outputs, boxes=[boxes_xywh]
+    )
+
+    boxes = list(boxes_xyxy)
     keypoints = []
-
-    if results.boxes is not None:
-        for box in results.boxes:
-            if int(box.cls[0]) == 0:  # person
-                boxes.append(box.xyxy[0].cpu().numpy())
-
-    if results.keypoints is not None:
-        for kp in results.keypoints.xy:
-            kp = kp.cpu().numpy()
-            kp = kp[~np.isnan(kp[:, 0])]
-            if len(kp):
-                keypoints.append(kp)
+    for person in pose_results[0]:
+        kps = person["keypoints"].cpu().numpy()    # (17, 2) pixel coords
+        scores = person["scores"].cpu().numpy()     # (17,) confidence
+        kps = kps[scores > KEYPOINT_SCORE]
+        keypoints.append(kps if len(kps) else np.zeros((0, 2)))
 
     return boxes, keypoints, w, h
 
@@ -153,10 +205,10 @@ def select_main_person(boxes, keypoints):
 def has_existing_crop(cr3_path: Path):
     """Check if XMP file exists and already has crop data"""
     xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
-    
+
     if not xmp_path.exists():
         return False
-    
+
     try:
         content = xmp_path.read_text()
         # Look for HasCrop tag with True value
@@ -184,12 +236,12 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
     if xmp_path.exists():
         # Read existing XMP and update crop tags using regex
         content = xmp_path.read_text()
-        
+
         for tag, value in crop_tags.items():
             # Pattern to match existing tag with any content
             pattern = rf'<crs:{tag}>.*?</crs:{tag}>'
             replacement = f'<crs:{tag}>{value}</crs:{tag}>'
-            
+
             if re.search(pattern, content):
                 # Tag exists, replace it
                 content = re.sub(pattern, replacement, content)
@@ -201,7 +253,7 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
                     # Insert new tag before closing Description
                     new_tag = f'   <crs:{tag}>{value}</crs:{tag}>\n  '
                     content = content.replace(desc_close, new_tag + desc_close)
-        
+
         xmp_path.write_text(content)
 
     else:
@@ -224,7 +276,7 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
         xmp_path.write_text(xmp)
 
 
-def process_cr3(model, cr3_path: Path, force: bool = False, all_people: bool = False):
+def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = False):
     # Skip if already has a crop (unless force flag is set)
     if not force and has_existing_crop(cr3_path):
         return False
@@ -233,7 +285,7 @@ def process_cr3(model, cr3_path: Path, force: bool = False, all_people: bool = F
         preview = Path(tmp) / "preview.jpg"
         extract_preview_jpeg(cr3_path, preview)
 
-        boxes, keypoints, w, h = detect_people_with_keypoints(model, preview)
+        boxes, keypoints, w, h = detect_people_with_keypoints(models, preview)
 
         if not boxes and not keypoints:
             return False
@@ -255,7 +307,7 @@ def find_cr3_files(root: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Auto-crop CR3 files using YOLO pose keypoints and write Lightroom XMP crops"
+        description="Auto-crop CR3 files using ViTPose keypoints and write Lightroom XMP crops"
     )
     parser.add_argument(
         "path",
@@ -285,7 +337,7 @@ def main():
     if not cr3_files:
         raise SystemExit(f"No CR3 files found under: {root}")
 
-    model = YOLO(MODEL_NAME)
+    models = load_models()
 
     processed = 0
     skipped = 0
@@ -295,8 +347,8 @@ def main():
         if not args.force and has_existing_crop(cr3):
             skipped += 1
             continue
-        
-        result = process_cr3(model, cr3, force=args.force, all_people=args.all_people)
+
+        result = process_cr3(models, cr3, force=args.force, all_people=args.all_people)
         if result:
             processed += 1
         else:
