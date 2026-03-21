@@ -53,12 +53,14 @@ networkx==3.6.1
     # via torch
 numpy==2.3.5
     # via scipy
+    # via torchvision
     # via transformers
 packaging==25.0
     # via huggingface-hub
     # via transformers
 pillow==12.0.0
     # via autocropper
+    # via torchvision
 pygments==2.19.2
     # via rich
 pyyaml==6.0.3
@@ -80,7 +82,10 @@ sympy==1.14.0
     # via torch
 tokenizers==0.22.2
     # via transformers
-torch==2.9.1
+torch==2.10.0
+    # via autocropper
+    # via torchvision
+torchvision==0.25.0
     # via autocropper
 tqdm==4.67.1
     # via autocropper

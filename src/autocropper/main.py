@@ -13,12 +13,12 @@ from tqdm import tqdm
 
 # ---------------- CONFIG ----------------
 
-DETECTOR_MODEL = "PekingU/rtdetr_r50vd_coco_o365"
-POSE_MODEL = "usyd-community/vitpose-base-simple"
-CONFIDENCE = 0.3        # Person detection confidence threshold
-KEYPOINT_SCORE = 0.3    # Minimum keypoint confidence to include
-MARGIN_RATIO = 0.10     # Margin around merged box
-INSTAGRAM_RATIO = 5 / 4 # Instagram's widest feed crop (5:4 landscape / 4:5 portrait)
+GDINO_MODEL = "IDEA-Research/grounding-dino-base"
+SAM2_MODEL  = "facebook/sam2-hiera-base-plus"
+TEXT_PROMPT = "dancing person."   # Grounding DINO requires a trailing period
+CONFIDENCE  = 0.3        # Box and text threshold for Grounding DINO
+MARGIN_RATIO = 0.10      # Margin around merged box
+INSTAGRAM_RATIO = 5 / 4  # Instagram's widest feed crop (5:4 landscape / 4:5 portrait)
 
 DEFAULT_ROOT = Path.home() / "Desktop/Test"
 
@@ -40,7 +40,7 @@ def extract_preview_jpeg(cr3_path: Path, out_jpg: Path):
 
 
 def load_models():
-    from transformers import AutoProcessor, RTDetrForObjectDetection, VitPoseForPoseEstimation
+    from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection, Sam2Processor, Sam2Model
 
     if torch.cuda.is_available():
         device = "cuda"
@@ -51,69 +51,81 @@ def load_models():
 
     print(f"Loading models on {device}...")
 
-    det_processor = AutoProcessor.from_pretrained(DETECTOR_MODEL)
-    det_model = RTDetrForObjectDetection.from_pretrained(DETECTOR_MODEL).to(device).eval()
+    gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL)
+    gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(GDINO_MODEL).to(device).eval()
 
-    pose_processor = AutoProcessor.from_pretrained(POSE_MODEL)
-    pose_model = VitPoseForPoseEstimation.from_pretrained(POSE_MODEL).to(device).eval()
+    sam2_processor = Sam2Processor.from_pretrained(SAM2_MODEL)
+    sam2_model = Sam2Model.from_pretrained(SAM2_MODEL).to(device).eval()
 
-    return det_processor, det_model, pose_processor, pose_model
+    return gdino_processor, gdino_model, sam2_processor, sam2_model
 
 
-def detect_people_with_keypoints(models, image_path: Path):
-    det_processor, det_model, pose_processor, pose_model = models
-    device = next(det_model.parameters()).device
+def detect_people_with_masks(models, image_path: Path):
+    from scipy.spatial import ConvexHull
+
+    gdino_processor, gdino_model, sam2_processor, sam2_model = models
+    device = next(gdino_model.parameters()).device
 
     image = Image.open(image_path).convert("RGB")
     w, h = image.size
 
-    # Stage 1: Person detection via RT-DETR
-    det_inputs = det_processor(images=image, return_tensors="pt").to(device)
+    # Stage 1: Text-prompted detection via Grounding DINO
+    gdino_inputs = gdino_processor(images=image, text=TEXT_PROMPT, return_tensors="pt").to(device)
     with torch.no_grad():
-        det_outputs = det_model(**det_inputs)
+        gdino_outputs = gdino_model(**gdino_inputs)
 
-    det_results = det_processor.post_process_object_detection(
-        det_outputs,
-        target_sizes=torch.tensor([(h, w)]),
+    results = gdino_processor.post_process_grounded_object_detection(
+        gdino_outputs,
+        gdino_inputs["input_ids"],
         threshold=CONFIDENCE,
+        text_threshold=CONFIDENCE,
+        target_sizes=[(h, w)],
     )
 
-    person_label = next(
-        k for k, v in det_model.config.id2label.items() if v.lower() == "person"
-    )
-    mask = det_results[0]["labels"] == person_label
-    boxes_xyxy = det_results[0]["boxes"][mask].cpu().numpy()
+    boxes_xyxy = results[0]["boxes"].cpu().numpy()
 
     if len(boxes_xyxy) == 0:
         return [], [], w, h
 
-    # Convert VOC (x1,y1,x2,y2) → COCO (x1,y1,w,h) for ViTPose processor
-    boxes_xywh = boxes_xyxy.copy()
-    boxes_xywh[:, 2] -= boxes_xywh[:, 0]
-    boxes_xywh[:, 3] -= boxes_xywh[:, 1]
-
-    # Stage 2: Pose estimation via ViTPose
-    pose_inputs = pose_processor(image, boxes=[boxes_xywh], return_tensors="pt")
-    pose_inputs = {k: v.to(device) for k, v in pose_inputs.items()}
+    # Stage 2: Segmentation via SAM 2
+    sam2_inputs = sam2_processor(
+        images=image,
+        input_boxes=[boxes_xyxy.tolist()],
+        return_tensors="pt",
+    )
+    original_sizes = sam2_inputs["original_sizes"]
+    model_inputs = {k: v.to(device) for k, v in sam2_inputs.items() if k in ("pixel_values", "input_boxes")}
     with torch.no_grad():
-        pose_outputs = pose_model(**pose_inputs)
+        sam2_outputs = sam2_model(**model_inputs)
 
-    pose_results = pose_processor.post_process_pose_estimation(
-        pose_outputs, boxes=[boxes_xywh]
+    masks_list = sam2_processor.post_process_masks(
+        sam2_outputs.pred_masks.cpu(),
+        original_sizes,
     )
 
-    boxes = list(boxes_xyxy)
-    keypoints = []
-    for person in pose_results[0]:
-        kps = person["keypoints"].cpu().numpy()    # (17, 2) pixel coords
-        scores = person["scores"].cpu().numpy()     # (17,) confidence
-        kps = kps[scores > KEYPOINT_SCORE]
-        keypoints.append(kps if len(kps) else np.zeros((0, 2)))
+    # Extract convex hull vertices from each person's mask
+    # masks_list[0] shape: (num_people, 1, H, W)
+    hulls = []
+    for person_masks in masks_list[0]:
+        mask_np = person_masks[0].cpu().numpy()  # (H, W) bool
+        ys, xs = np.where(mask_np)
+        if len(xs) == 0:
+            hulls.append(np.zeros((0, 2)))
+            continue
+        pts = np.column_stack([xs, ys]).astype(float)
+        if len(pts) >= 3:
+            try:
+                hull = ConvexHull(pts)
+                hulls.append(pts[hull.vertices])
+            except Exception:
+                hulls.append(pts)
+        else:
+            hulls.append(pts)
 
-    return boxes, keypoints, w, h
+    return list(boxes_xyxy), hulls, w, h
 
 
-def merged_envelope(boxes, keypoints):
+def merged_envelope(boxes, hulls):
     xs = []
     ys = []
 
@@ -122,9 +134,10 @@ def merged_envelope(boxes, keypoints):
         xs.extend([x1, x2])
         ys.extend([y1, y2])
 
-    for kp in keypoints:
-        xs.extend(kp[:, 0])
-        ys.extend(kp[:, 1])
+    for pts in hulls:
+        if len(pts):
+            xs.extend(pts[:, 0])
+            ys.extend(pts[:, 1])
 
     return min(xs), min(ys), max(xs), max(ys)
 
@@ -317,15 +330,15 @@ def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = 
         preview = Path(tmp) / "preview.jpg"
         extract_preview_jpeg(cr3_path, preview)
 
-        boxes, keypoints, w, h = detect_people_with_keypoints(models, preview)
+        boxes, hulls, w, h = detect_people_with_masks(models, preview)
 
-        if not boxes and not keypoints:
+        if not boxes and not hulls:
             return False
 
         if not all_people:
-            boxes, keypoints = select_main_person(boxes, keypoints)
+            boxes, hulls = select_main_person(boxes, hulls)
 
-        x1, y1, x2, y2 = merged_envelope(boxes, keypoints)
+        x1, y1, x2, y2 = merged_envelope(boxes, hulls)
         x1, y1, x2, y2 = expand_with_margin(x1, y1, x2, y2, w, h)
         x1, y1, x2, y2 = expand_for_instagram_safe_zone(x1, y1, x2, y2, w, h)
         x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
@@ -340,7 +353,7 @@ def find_cr3_files(root: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Auto-crop CR3 files using ViTPose keypoints and write Lightroom XMP crops"
+        description="Auto-crop CR3 files using Grounded SAM 2 segmentation and write Lightroom XMP crops"
     )
     parser.add_argument(
         "path",

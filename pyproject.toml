@@ -11,6 +11,7 @@ dependencies = [
     "scipy>=1.10.0",
     "pillow>=12.0.0",
     "tqdm>=4.67.1",
+    "torchvision>=0.25.0",
 ]
 readme = "README.md"
 requires-python = ">= 3.8"
