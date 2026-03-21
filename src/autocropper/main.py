@@ -13,12 +13,12 @@ from tqdm import tqdm
 
 # ---------------- CONFIG ----------------
 
-GDINO_MODEL = "IDEA-Research/grounding-dino-base"
-SAM2_MODEL  = "facebook/sam2-hiera-base-plus"
+GDINO_MODEL = "IDEA-Research/grounding-dino-tiny"
 TEXT_PROMPT = "dancing person."   # Grounding DINO requires a trailing period
 CONFIDENCE  = 0.3        # Box and text threshold for Grounding DINO
 MARGIN_RATIO = 0.10      # Margin around merged box
 INSTAGRAM_RATIO = 5 / 4  # Instagram's widest feed crop (5:4 landscape / 4:5 portrait)
+MAX_ZOOM = 0.5           # Don't zoom in more than this fraction of the image width
 
 DEFAULT_ROOT = Path.home() / "Desktop/Test"
 
@@ -40,7 +40,7 @@ def extract_preview_jpeg(cr3_path: Path, out_jpg: Path):
 
 
 def load_models():
-    from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection, Sam2Processor, Sam2Model
+    from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 
     if torch.cuda.is_available():
         device = "cuda"
@@ -51,27 +51,25 @@ def load_models():
 
     print(f"Loading models on {device}...")
 
-    gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL)
-    gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(GDINO_MODEL).to(device).eval()
+    gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True)
+    gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
+        GDINO_MODEL, dtype=torch.float16
+    ).to(device).eval()
 
-    sam2_processor = Sam2Processor.from_pretrained(SAM2_MODEL)
-    sam2_model = Sam2Model.from_pretrained(SAM2_MODEL).to(device).eval()
-
-    return gdino_processor, gdino_model, sam2_processor, sam2_model
+    return gdino_processor, gdino_model
 
 
 def detect_people_with_masks(models, image_path: Path):
-    from scipy.spatial import ConvexHull
-
-    gdino_processor, gdino_model, sam2_processor, sam2_model = models
+    gdino_processor, gdino_model = models
     device = next(gdino_model.parameters()).device
 
     image = Image.open(image_path).convert("RGB")
     w, h = image.size
 
-    # Stage 1: Text-prompted detection via Grounding DINO
-    gdino_inputs = gdino_processor(images=image, text=TEXT_PROMPT, return_tensors="pt").to(device)
-    with torch.no_grad():
+    gdino_inputs = gdino_processor(images=image, text=TEXT_PROMPT, return_tensors="pt")
+    gdino_inputs = {k: v.to(device) for k, v in gdino_inputs.items()}
+    device_type = device.type  # "cuda", "mps", or "cpu"
+    with torch.no_grad(), torch.autocast(device_type=device_type, dtype=torch.float16):
         gdino_outputs = gdino_model(**gdino_inputs)
 
     results = gdino_processor.post_process_grounded_object_detection(
@@ -87,40 +85,8 @@ def detect_people_with_masks(models, image_path: Path):
     if len(boxes_xyxy) == 0:
         return [], [], w, h
 
-    # Stage 2: Segmentation via SAM 2
-    sam2_inputs = sam2_processor(
-        images=image,
-        input_boxes=[boxes_xyxy.tolist()],
-        return_tensors="pt",
-    )
-    original_sizes = sam2_inputs["original_sizes"]
-    model_inputs = {k: v.to(device) for k, v in sam2_inputs.items() if k in ("pixel_values", "input_boxes")}
-    with torch.no_grad():
-        sam2_outputs = sam2_model(**model_inputs)
-
-    masks_list = sam2_processor.post_process_masks(
-        sam2_outputs.pred_masks.cpu(),
-        original_sizes,
-    )
-
-    # Extract convex hull vertices from each person's mask
-    # masks_list[0] shape: (num_people, 1, H, W)
-    hulls = []
-    for person_masks in masks_list[0]:
-        mask_np = person_masks[0].cpu().numpy()  # (H, W) bool
-        ys, xs = np.where(mask_np)
-        if len(xs) == 0:
-            hulls.append(np.zeros((0, 2)))
-            continue
-        pts = np.column_stack([xs, ys]).astype(float)
-        if len(pts) >= 3:
-            try:
-                hull = ConvexHull(pts)
-                hulls.append(pts[hull.vertices])
-            except Exception:
-                hulls.append(pts)
-        else:
-            hulls.append(pts)
+    # Without SAM 2, treat each box's corners as the "hull" for envelope calculation
+    hulls = [np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]]) for x1, y1, x2, y2 in boxes_xyxy]
 
     return list(boxes_xyxy), hulls, w, h
 
@@ -241,6 +207,29 @@ def enforce_aspect_ratio(x1, y1, x2, y2, w, h):
 
 
 
+def limit_zoom(x1, y1, x2, y2, w, h, person_cx):
+    """If crop is zoomed in more than MAX_ZOOM, widen to the minimum needed to centre the person."""
+    crop_w = x2 - x1
+    if crop_w / w >= (1 - MAX_ZOOM):
+        return x1, y1, x2, y2
+
+    # Widest crop that can be centred on person_cx within the frame
+    min_w = 2 * min(person_cx, w - person_cx)
+    new_w = max(crop_w, min_w)
+
+    new_x1 = person_cx - new_w / 2
+    new_x2 = person_cx + new_w / 2
+
+    if new_x1 < 0:
+        new_x2 -= new_x1
+        new_x1 = 0
+    if new_x2 > w:
+        new_x1 -= (new_x2 - w)
+        new_x2 = w
+
+    return new_x1, y1, new_x2, y2
+
+
 def select_main_person(boxes, keypoints):
     """Select only the largest detected person by bounding box area."""
     if not boxes:
@@ -339,8 +328,11 @@ def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = 
             boxes, hulls = select_main_person(boxes, hulls)
 
         x1, y1, x2, y2 = merged_envelope(boxes, hulls)
+        person_cx = (x1 + x2) / 2
         x1, y1, x2, y2 = expand_with_margin(x1, y1, x2, y2, w, h)
         x1, y1, x2, y2 = expand_for_instagram_safe_zone(x1, y1, x2, y2, w, h)
+        x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
+        x1, y1, x2, y2 = limit_zoom(x1, y1, x2, y2, w, h, person_cx)
         x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
 
         write_xmp(cr3_path, x1, y1, x2, y2, w, h)
