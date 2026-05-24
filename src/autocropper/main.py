@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import io
 import re
 import subprocess
 import tempfile
@@ -310,11 +311,8 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
         xmp_path.write_text(xmp)
 
 
-def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = False):
-    # Skip if already has a crop (unless force flag is set)
-    if not force and has_existing_crop(cr3_path):
-        return False
-
+def compute_crop(models, cr3_path: Path, all_people: bool = False):
+    """Compute crop coordinates and return preview image bytes. Returns dict or None."""
     with tempfile.TemporaryDirectory() as tmp:
         preview = Path(tmp) / "preview.jpg"
         extract_preview_jpeg(cr3_path, preview)
@@ -322,7 +320,7 @@ def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = 
         boxes, hulls, w, h = detect_people_with_masks(models, preview)
 
         if not boxes and not hulls:
-            return False
+            return None
 
         if not all_people:
             boxes, hulls = select_main_person(boxes, hulls)
@@ -335,8 +333,32 @@ def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = 
         x1, y1, x2, y2 = limit_zoom(x1, y1, x2, y2, w, h, person_cx)
         x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
 
-        write_xmp(cr3_path, x1, y1, x2, y2, w, h)
-        return True
+        orig_bytes = preview.read_bytes()
+
+        crop_buf = io.BytesIO()
+        Image.open(preview).convert("RGB").crop(
+            (int(x1), int(y1), int(x2), int(y2))
+        ).save(crop_buf, format="JPEG", quality=85)
+
+        return {
+            "cr3_path": cr3_path,
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+            "w": w, "h": h,
+            "orig_bytes": orig_bytes,
+            "crop_bytes": crop_buf.getvalue(),
+        }
+
+
+def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = False):
+    if not force and has_existing_crop(cr3_path):
+        return False
+
+    result = compute_crop(models, cr3_path, all_people)
+    if result is None:
+        return False
+
+    write_xmp(cr3_path, result["x1"], result["y1"], result["x2"], result["y2"], result["w"], result["h"])
+    return True
 
 
 def find_cr3_files(root: Path):
