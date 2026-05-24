@@ -20,8 +20,12 @@ from .main import (
 DEFAULT_ROOT = Path.home() / "Desktop/Test"
 
 
+PREFETCH = 2  # images to pre-process ahead; bounds peak RAM to ~PREFETCH × preview size
+
+
 class ReviewState:
-    """Manages the queue of images and coordinates background processing."""
+    """Producer/consumer design: producer pre-processes up to PREFETCH images ahead,
+    consumer presents them and waits for decisions. The user rarely waits."""
 
     def __init__(self, files, models, force=False, all_people=False):
         self.files = files
@@ -29,47 +33,61 @@ class ReviewState:
         self.force = force
         self.all_people = all_people
 
-        self.idx = 0
         self.accepted = 0
         self.rejected = 0
         self.skipped = 0
+        self.status = "loading"
+        self.current = None
 
-        self.status = "loading"  # "loading" | "ready" | "done"
-        self.current = None      # dict from compute_crop
+        # Total files that will need review (excludes already-cropped upfront).
+        # Decremented further as no-person detections are found during processing.
+        self.total_eligible = sum(
+            1 for f in files if force or not has_existing_crop(f)
+        )
 
-        self._decision_queue = queue.Queue()
+        # Only processed results enter the queue (skips handled inline by producer).
+        # maxsize bounds memory: each slot ≈ one preview JPEG pair (~1–4 MB).
+        self._prefetch_q = queue.Queue(maxsize=PREFETCH)
+        self._decision_q = queue.Queue()
         self._lock = threading.Lock()
 
-        threading.Thread(target=self._worker, daemon=True).start()
+        threading.Thread(target=self._producer, daemon=True).start()
+        threading.Thread(target=self._consumer, daemon=True).start()
 
-    def _worker(self):
-        while self.idx < len(self.files):
-            cr3 = self.files[self.idx]
-
+    def _producer(self):
+        for cr3 in self.files:
             if not self.force and has_existing_crop(cr3):
                 with self._lock:
-                    self.idx += 1
                     self.skipped += 1
+                    self.total_eligible -= 1
                 continue
-
-            with self._lock:
-                self.status = "loading"
-                self.current = None
 
             result = compute_crop(self.models, cr3, self.all_people)
 
             if result is None:
                 with self._lock:
-                    self.idx += 1
                     self.skipped += 1
+                    self.total_eligible -= 1
                 continue
+
+            self._prefetch_q.put(result)  # blocks if queue is full (backpressure)
+
+        self._prefetch_q.put(None)  # sentinel
+
+    def _consumer(self):
+        while True:
+            result = self._prefetch_q.get()
+
+            if result is None:
+                with self._lock:
+                    self.status = "done"
+                return
 
             with self._lock:
                 self.current = result
                 self.status = "ready"
 
-            # Block until user makes a decision
-            choice = self._decision_queue.get()
+            choice = self._decision_q.get()
 
             with self._lock:
                 if choice == "crop":
@@ -78,23 +96,18 @@ class ReviewState:
                     self.accepted += 1
                 else:
                     self.rejected += 1
-                self.idx += 1
                 self.current = None
                 self.status = "loading"
-
-        with self._lock:
-            self.status = "done"
 
     def decide(self, choice):
         """Called from Flask request handler. choice: 'crop' | 'skip'."""
         if self.status != "ready":
             return False
-        self._decision_queue.put(choice)
+        self._decision_q.put(choice)
         return True
 
     def get_state(self):
         with self._lock:
-            eligible = len(self.files) - self.skipped
             done_count = self.accepted + self.rejected
             if self.status == "done":
                 return {
@@ -107,14 +120,14 @@ class ReviewState:
                 return {
                     "status": "loading",
                     "idx": done_count,
-                    "total": eligible,
+                    "total": self.total_eligible,
                 }
             d = self.current
             return {
                 "status": "ready",
                 "filename": d["cr3_path"].name,
                 "idx": done_count + 1,
-                "total": eligible,
+                "total": self.total_eligible,
                 "orig_b64": base64.b64encode(d["orig_bytes"]).decode(),
                 "crop_b64": base64.b64encode(d["crop_bytes"]).decode(),
             }

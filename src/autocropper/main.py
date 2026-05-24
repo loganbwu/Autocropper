@@ -3,6 +3,7 @@
 import argparse
 import io
 import re
+import struct
 import subprocess
 import tempfile
 from pathlib import Path
@@ -361,8 +362,85 @@ def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = 
     return True
 
 
+_DTO_TAG   = 36867   # ExifIFD.DateTimeOriginal
+_EXIF_IFD  = 0x8769  # IFD0 pointer to ExifIFD sub-IFD
+_CANON_UUID = bytes.fromhex('85c0b687820f11e08111f4ce462b6a48')
+
+
+def _cr3_cmt2(data: bytes):
+    """Extract the CMT2 (ExifIFD) box payload from a Canon CR3 ISOBMFF file."""
+    def iter_boxes(buf, start, end):
+        off = start
+        while off + 8 <= end:
+            size = struct.unpack_from('>I', buf, off)[0]
+            btype = buf[off + 4:off + 8]
+            payload = off + 8
+            if size == 1:
+                size = struct.unpack_from('>Q', buf, off + 8)[0]
+                payload = off + 16
+            if size == 0:
+                size = end - off
+            yield btype, payload, off + size
+            off += size
+
+    moov_start = moov_end = None
+    for btype, s, e in iter_boxes(data, 0, len(data)):
+        if btype == b'moov':
+            moov_start, moov_end = s, e
+            break
+    if moov_start is None:
+        return None
+    for btype, s, e in iter_boxes(data, moov_start, moov_end):
+        if btype == b'uuid' and data[s:s + 16] == _CANON_UUID:
+            for btype2, s2, e2 in iter_boxes(data, s + 16, e):
+                if btype2 == b'CMT2':
+                    return data[s2:e2]
+    return None
+
+
+def _read_tiff_tag(tiff: bytes, tag: int):
+    """Return the value of a tag from a raw TIFF IFD block."""
+    if len(tiff) < 8:
+        return None
+    endian = '<' if tiff[:2] == b'II' else '>'
+    ifd_off = struct.unpack_from(endian + 'I', tiff, 4)[0]
+    n = struct.unpack_from(endian + 'H', tiff, ifd_off)[0]
+    for i in range(n):
+        off = ifd_off + 2 + i * 12
+        if off + 12 > len(tiff):
+            break
+        t, typ, count = struct.unpack_from(endian + 'HHI', tiff, off)
+        if t != tag:
+            continue
+        raw = tiff[off + 8:off + 12]
+        if typ == 3 and count == 1:
+            return struct.unpack_from(endian + 'H', raw)[0]
+        if typ == 4 and count == 1:
+            return struct.unpack_from(endian + 'I', raw)[0]
+        if typ == 2:
+            if count > 4:
+                val_off = struct.unpack_from(endian + 'I', raw)[0]
+                return tiff[val_off:val_off + count].rstrip(b'\x00').decode('ascii', 'replace')
+            return raw[:count].rstrip(b'\x00').decode('ascii', 'replace')
+    return None
+
+
+def get_capture_time(cr3_path: Path) -> str:
+    """Return DateTimeOriginal string ('YYYY:MM:DD HH:MM:SS') or '' on failure."""
+    try:
+        cmt2 = _cr3_cmt2(cr3_path.read_bytes())
+        if cmt2 is not None:
+            ts = _read_tiff_tag(cmt2, _DTO_TAG)
+            if ts:
+                return str(ts)
+    except Exception:
+        pass
+    return ''
+
+
 def find_cr3_files(root: Path):
-    return sorted(p for p in root.rglob("*") if p.suffix.lower() == ".cr3")
+    files = [p for p in root.rglob("*") if p.suffix.lower() == ".cr3"]
+    return sorted(files, key=lambda p: (get_capture_time(p), p.name))
 
 
 def main():
