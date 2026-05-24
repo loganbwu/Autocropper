@@ -5,12 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Autocropper Review</title>
   <style>
+    :root {
+      --white: #fff;
+      --grey: grey;
+      --paragraph-text-color: #bbb;
+      --pale-blue: #ADD8E6;
+      --black: #111111;
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      background: #111;
-      color: #ddd;
-      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--black);
+      color: var(--paragraph-text-color);
+      font-family: Helvetica, sans-serif;
       height: 100vh;
       display: flex;
       flex-direction: column;
@@ -28,8 +36,8 @@
       font-size: 14px;
     }
 
-    #filename { font-weight: 600; color: #fff; }
-    #progress { color: #888; }
+    #filename { font-weight: 600; color: var(--white); }
+    #progress { color: var(--grey); }
 
     #progress-bar-wrap {
       flex: 0 0 auto;
@@ -38,7 +46,7 @@
     }
     #progress-bar {
       height: 100%;
-      background: #4a9eff;
+      background: var(--pale-blue);
       width: 0%;
       transition: width 0.3s ease;
     }
@@ -66,8 +74,8 @@
     .panel:hover { background: #1a1a1a; }
 
     .panel.selected {
-      background: #1a2a1a;
-      outline: 2px solid #5a9;
+      background: #161e20;
+      outline: 2px solid var(--pale-blue);
       outline-offset: -2px;
     }
 
@@ -84,7 +92,7 @@
       left: 50%;
       transform: translateX(-50%);
       background: rgba(0,0,0,0.6);
-      color: #fff;
+      color: var(--white);
       padding: 4px 12px;
       border-radius: 4px;
       font-size: 13px;
@@ -105,7 +113,7 @@
       padding: 4px 12px;
       border-radius: 4px;
       font-size: 12px;
-      color: #aaa;
+      color: var(--paragraph-text-color);
       pointer-events: none;
     }
 
@@ -117,7 +125,7 @@
       padding: 1px 6px;
       font-size: 12px;
       font-weight: 600;
-      color: #fff;
+      color: var(--white);
     }
 
     #overlay {
@@ -137,19 +145,19 @@
     #overlay-title {
       font-size: 22px;
       font-weight: 600;
-      color: #fff;
+      color: var(--white);
     }
 
     #overlay-sub {
       font-size: 15px;
-      color: #888;
+      color: var(--grey);
     }
 
     .spinner {
       width: 36px;
       height: 36px;
       border: 3px solid #333;
-      border-top-color: #4a9eff;
+      border-top-color: var(--pale-blue);
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
@@ -158,12 +166,12 @@
 
     #stats {
       font-size: 14px;
-      color: #888;
+      color: var(--paragraph-text-color);
       text-align: center;
       line-height: 1.8;
     }
 
-    #stats span { color: #fff; font-weight: 600; }
+    #stats span { color: var(--white); font-weight: 600; }
   </style>
 </head>
 <body>
