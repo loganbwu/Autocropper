@@ -25,7 +25,7 @@ from .main import (
 
 PREFETCH_DEFAULT = 10  # default prefetch buffer; user can override in the UI
 PREFETCH_MIN = 1
-PREFETCH_MAX = 50
+PREFETCH_MAX = 100
 PROCESSING_WORKERS = 4  # parallel exiftool + file-read threads; inference is still serialised
 
 # Models load eagerly in background so they're ready when the user picks a folder

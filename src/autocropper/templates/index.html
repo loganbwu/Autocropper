@@ -347,6 +347,12 @@
   let uiReady = false;
   let deciding = false;
   let currentPrefetch = 0;  // rebuilt from first state response
+  let _pollTimer = null;
+
+  function schedulePoll(delay) {
+    clearTimeout(_pollTimer);
+    _pollTimer = setTimeout(poll, delay);
+  }
 
   // ── Folder picker ──────────────────────────────────────────
 
@@ -406,7 +412,7 @@
 
       if (data.status === 'starting') {
         showStarting(data.stage, data.progress);
-        setTimeout(poll, data.progress != null ? 250 : 600);
+        schedulePoll(data.progress != null ? 250 : 600);
         return;
       }
 
@@ -417,15 +423,15 @@
 
       if (data.status === 'loading') {
         showLoading(data);
-        setTimeout(poll, 600);
+        schedulePoll(600);
         return;
       }
 
       // ready
       showImage(data);
-      setTimeout(poll, 2000);
+      schedulePoll(2000);
     } catch (e) {
-      setTimeout(poll, 1000);
+      schedulePoll(1000);
     }
   }
 
@@ -552,7 +558,7 @@
     });
 
     uiReady = false;
-    setTimeout(poll, 100);
+    schedulePoll(100);
   }
 
   document.addEventListener('keydown', (e) => {
