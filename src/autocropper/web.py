@@ -155,16 +155,12 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
     @app.route("/api/pick-folder")
     def api_pick_folder():
         result = subprocess.run(
-            ["osascript", "-e", 'choose folder with prompt "Select a folder of CR3 files"'],
+            ["osascript", "-e", 'POSIX path of (choose folder with prompt "Select a folder of CR3 files")'],
             capture_output=True, text=True,
         )
         if result.returncode != 0:
             return jsonify({"path": None})
-        raw = result.stdout.strip()
-        # osascript returns an alias like "Macintosh HD:Users:foo:bar:"
-        parts = raw.split(":")
-        path = "/" + "/".join(p for p in parts[1:] if p)
-        return jsonify({"path": path})
+        return jsonify({"path": result.stdout.strip()})
 
     @app.route("/api/start", methods=["POST"])
     def api_start():
