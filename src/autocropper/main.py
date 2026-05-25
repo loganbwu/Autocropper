@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from PIL import Image, ImageOps
+from PIL import Image
 from tqdm import tqdm
 
 # ---------------- CONFIG ----------------
@@ -61,11 +61,11 @@ def load_models():
     return gdino_processor, gdino_model
 
 
-def detect_people_with_masks(models, image_path: Path):
+def detect_people_with_masks(models, image_path: Path, orientation: int = 1):
     gdino_processor, gdino_model = models
     device = next(gdino_model.parameters()).device
 
-    image = ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
+    image = apply_orientation(Image.open(image_path).convert("RGB"), orientation)
     w, h = image.size
 
     gdino_inputs = gdino_processor(images=image, text=TEXT_PROMPT, return_tensors="pt")
@@ -314,11 +314,13 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
 
 def compute_crop(models, cr3_path: Path, all_people: bool = False):
     """Compute crop coordinates and return preview image bytes. Returns dict or None."""
+    orientation = get_orientation(cr3_path)
+
     with tempfile.TemporaryDirectory() as tmp:
         preview = Path(tmp) / "preview.jpg"
         extract_preview_jpeg(cr3_path, preview)
 
-        boxes, hulls, w, h = detect_people_with_masks(models, preview)
+        boxes, hulls, w, h = detect_people_with_masks(models, preview, orientation)
 
         if not boxes and not hulls:
             return None
@@ -341,8 +343,7 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False):
         orig_bytes = preview.read_bytes()
 
         crop_buf = io.BytesIO()
-        # exif_transpose so crop is in the same orientation as the displayed original
-        ImageOps.exif_transpose(Image.open(preview)).convert("RGB").crop(
+        apply_orientation(Image.open(preview).convert("RGB"), orientation).crop(
             (int(x1), int(y1), int(x2), int(y2))
         ).save(crop_buf, format="JPEG", quality=85)
 
@@ -367,38 +368,50 @@ def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = 
     return True
 
 
-_DTO_TAG   = 36867   # ExifIFD.DateTimeOriginal
-_EXIF_IFD  = 0x8769  # IFD0 pointer to ExifIFD sub-IFD
+_DTO_TAG        = 36867  # ExifIFD.DateTimeOriginal
+_ORIENTATION_TAG = 274   # IFD0.Orientation
 _CANON_UUID = bytes.fromhex('85c0b687820f11e08111f4ce462b6a48')
 
+# EXIF Orientation → PIL transpose operation
+_ORIENTATION_TO_TRANSPOSE = {
+    2: Image.Transpose.FLIP_LEFT_RIGHT,
+    3: Image.Transpose.ROTATE_180,
+    4: Image.Transpose.FLIP_TOP_BOTTOM,
+    5: Image.Transpose.TRANSPOSE,
+    6: Image.Transpose.ROTATE_270,
+    7: Image.Transpose.TRANSVERSE,
+    8: Image.Transpose.ROTATE_90,
+}
 
-def _cr3_cmt2(data: bytes):
-    """Extract the CMT2 (ExifIFD) box payload from a Canon CR3 ISOBMFF file."""
-    def iter_boxes(buf, start, end):
-        off = start
-        while off + 8 <= end:
-            size = struct.unpack_from('>I', buf, off)[0]
-            btype = buf[off + 4:off + 8]
-            payload = off + 8
-            if size == 1:
-                size = struct.unpack_from('>Q', buf, off + 8)[0]
-                payload = off + 16
-            if size == 0:
-                size = end - off
-            yield btype, payload, off + size
-            off += size
 
+def _iter_isobmff_boxes(buf, start, end):
+    off = start
+    while off + 8 <= end:
+        size = struct.unpack_from('>I', buf, off)[0]
+        btype = buf[off + 4:off + 8]
+        payload = off + 8
+        if size == 1:
+            size = struct.unpack_from('>Q', buf, off + 8)[0]
+            payload = off + 16
+        if size == 0:
+            size = end - off
+        yield btype, payload, off + size
+        off += size
+
+
+def _cr3_cmt_box(data: bytes, box_name: bytes):
+    """Extract a named CMT box payload from a Canon CR3 ISOBMFF file."""
     moov_start = moov_end = None
-    for btype, s, e in iter_boxes(data, 0, len(data)):
+    for btype, s, e in _iter_isobmff_boxes(data, 0, len(data)):
         if btype == b'moov':
             moov_start, moov_end = s, e
             break
     if moov_start is None:
         return None
-    for btype, s, e in iter_boxes(data, moov_start, moov_end):
+    for btype, s, e in _iter_isobmff_boxes(data, moov_start, moov_end):
         if btype == b'uuid' and data[s:s + 16] == _CANON_UUID:
-            for btype2, s2, e2 in iter_boxes(data, s + 16, e):
-                if btype2 == b'CMT2':
+            for btype2, s2, e2 in _iter_isobmff_boxes(data, s + 16, e):
+                if btype2 == box_name:
                     return data[s2:e2]
     return None
 
@@ -433,7 +446,7 @@ def _read_tiff_tag(tiff: bytes, tag: int):
 def get_capture_time(cr3_path: Path) -> str:
     """Return DateTimeOriginal string ('YYYY:MM:DD HH:MM:SS') or '' on failure."""
     try:
-        cmt2 = _cr3_cmt2(cr3_path.read_bytes())
+        cmt2 = _cr3_cmt_box(cr3_path.read_bytes(), b'CMT2')
         if cmt2 is not None:
             ts = _read_tiff_tag(cmt2, _DTO_TAG)
             if ts:
@@ -441,6 +454,24 @@ def get_capture_time(cr3_path: Path) -> str:
     except Exception:
         pass
     return ''
+
+
+def get_orientation(cr3_path: Path) -> int:
+    """Return EXIF Orientation (1–8) from IFD0/CMT1, or 1 (normal) on failure."""
+    try:
+        cmt1 = _cr3_cmt_box(cr3_path.read_bytes(), b'CMT1')
+        if cmt1 is not None:
+            val = _read_tiff_tag(cmt1, _ORIENTATION_TAG)
+            if val is not None:
+                return int(val)
+    except Exception:
+        pass
+    return 1
+
+
+def apply_orientation(img: Image.Image, orientation: int) -> Image.Image:
+    op = _ORIENTATION_TO_TRANSPOSE.get(orientation)
+    return img.transpose(op) if op else img
 
 
 def find_cr3_files(root: Path):
