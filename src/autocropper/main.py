@@ -248,7 +248,7 @@ def select_main_person(boxes, keypoints):
     return [boxes[idx]], main_kps
 
 
-CROP_TAGS = ('HasCrop', 'CropLeft', 'CropTop', 'CropRight', 'CropBottom')
+CROP_TAGS = ('HasCrop', 'CropLeft', 'CropTop', 'CropRight', 'CropBottom', 'CropAngle')
 
 
 def has_existing_crop(cr3_path: Path):
@@ -281,15 +281,18 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
         f'   <crs:CropTop>{top:.6f}</crs:CropTop>\n'
         f'   <crs:CropRight>{right:.6f}</crs:CropRight>\n'
         f'   <crs:CropBottom>{bottom:.6f}</crs:CropBottom>\n'
+        f'   <crs:CropAngle>0</crs:CropAngle>\n'
     )
 
     if xmp_path.exists():
         content = xmp_path.read_text()
 
-        # Strip all existing crop element tags from anywhere in the document
-        # (handles duplicates inserted by previous buggy runs)
+        # Strip element-form crop tags
         for tag in CROP_TAGS:
             content = re.sub(rf'\s*<crs:{tag}>.*?</crs:{tag}>', '', content)
+        # Strip attribute-form crop tags (written by Lightroom)
+        for tag in CROP_TAGS:
+            content = re.sub(rf'\s*crs:{tag}="[^"]*"', '', content)
 
         # Insert crop block once, before the last </rdf:Description> (top-level block)
         last_close = content.rfind('</rdf:Description>')
@@ -310,6 +313,7 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
    <crs:CropTop>{top:.6f}</crs:CropTop>
    <crs:CropRight>{right:.6f}</crs:CropRight>
    <crs:CropBottom>{bottom:.6f}</crs:CropBottom>
+   <crs:CropAngle>0</crs:CropAngle>
   </rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>
