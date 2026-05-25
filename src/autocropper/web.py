@@ -20,7 +20,7 @@ from .main import (
 DEFAULT_ROOT = Path.home() / "Desktop/Test"
 
 
-PREFETCH = 2  # images to pre-process ahead; bounds peak RAM to ~PREFETCH × preview size
+PREFETCH = 10  # images to pre-process ahead; bounds peak RAM to ~PREFETCH × preview size
 
 
 class ReviewState:
