@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import contextlib
 import io
 import re
 import struct
@@ -323,15 +324,21 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
         xmp_path.write_text(xmp)
 
 
-def compute_crop(models, cr3_path: Path, all_people: bool = False):
-    """Compute crop coordinates and return preview image bytes. Returns dict or None."""
+def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lock=None):
+    """Compute crop coordinates and return preview image bytes. Returns dict or None.
+
+    _inference_lock: optional threading.Lock to serialise GPU/MPS model calls when
+    multiple worker threads are used (concurrent inference corrupts MPS state).
+    """
     orientation = get_orientation(cr3_path)
 
     with tempfile.TemporaryDirectory() as tmp:
         preview = Path(tmp) / "preview.jpg"
         extract_preview_jpeg(cr3_path, preview)
 
-        boxes, hulls, w, h = detect_people_with_masks(models, preview, orientation)
+        lock_ctx = _inference_lock if _inference_lock is not None else contextlib.nullcontext()
+        with lock_ctx:
+            boxes, hulls, w, h = detect_people_with_masks(models, preview, orientation)
 
         if not boxes and not hulls:
             return None

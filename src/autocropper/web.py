@@ -2,6 +2,8 @@
 
 import argparse
 import base64
+import collections
+import itertools
 import queue
 import subprocess
 import threading
@@ -19,7 +21,8 @@ from .main import (
     write_xmp,
 )
 
-PREFETCH = 10  # images to pre-process ahead; bounds peak RAM to ~PREFETCH × preview size
+PREFETCH = 10         # images to pre-process ahead; bounds peak RAM to ~PREFETCH × preview size
+PROCESSING_WORKERS = 4  # parallel exiftool + file-read threads; inference is still serialised
 
 # Models load eagerly in background so they're ready when the user picks a folder
 _models = None
@@ -61,34 +64,62 @@ class ReviewState:
         self._prefetch_q = queue.Queue(maxsize=PREFETCH)
         self._decision_q = queue.Queue()
         self._lock = threading.Lock()
+        self._inference_lock = threading.Lock()  # serialises GPU/MPS model calls across worker threads
 
         threading.Thread(target=self._producer, daemon=True).start()
         threading.Thread(target=self._consumer, daemon=True).start()
 
     def _producer(self):
+        def _process(cr3):
+            return compute_crop(self.models, cr3, self.all_people, _inference_lock=self._inference_lock)
+
         try:
+            # Split files into already-cropped (instant skip) and ones to process.
+            to_process = []
             for cr3 in self.files:
                 if not self.force and has_existing_crop(cr3):
                     with self._lock:
                         self.skipped += 1
-                    continue
+                else:
+                    to_process.append(cr3)
 
-                try:
-                    result = compute_crop(self.models, cr3, self.all_people)
-                except Exception as e:
-                    print(f"  Warning: skipping {cr3.name} — {e}")
-                    with self._lock:
-                        self.skipped += 1
-                    continue
+            # Sliding-window thread pool: PROCESSING_WORKERS threads run exiftool and
+            # file I/O in parallel; the _inference_lock inside compute_crop serialises
+            # the GPU/MPS model call so at most one inference runs at a time.
+            # Results are collected in submission order so the review queue is ordered.
+            with ThreadPoolExecutor(max_workers=PROCESSING_WORKERS) as pool:
+                pending = collections.deque()
+                files_iter = iter(to_process)
 
-                if result is None:
-                    print(f"  No person: {cr3.name}")
-                    with self._lock:
-                        self.skipped += 1
-                    continue
+                for cr3 in itertools.islice(files_iter, PROCESSING_WORKERS):
+                    pending.append((cr3, pool.submit(_process, cr3)))
 
-                print(f"  Ready:     {cr3.name}")
-                self._prefetch_q.put(result)  # blocks if queue is full (backpressure)
+                while pending:
+                    cr3, future = pending.popleft()
+
+                    # Keep the window full: submit next file while we wait for this result.
+                    try:
+                        next_cr3 = next(files_iter)
+                        pending.append((next_cr3, pool.submit(_process, next_cr3)))
+                    except StopIteration:
+                        pass
+
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        print(f"  Warning: skipping {cr3.name} — {e}")
+                        with self._lock:
+                            self.skipped += 1
+                        continue
+
+                    if result is None:
+                        print(f"  No person: {cr3.name}")
+                        with self._lock:
+                            self.skipped += 1
+                        continue
+
+                    print(f"  Ready:     {cr3.name}")
+                    self._prefetch_q.put(result)  # blocks if queue is full (backpressure)
         finally:
             self._prefetch_q.put(None)  # sentinel always sent, even after an unexpected error
 
