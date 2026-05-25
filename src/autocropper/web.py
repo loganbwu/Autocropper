@@ -28,7 +28,9 @@ _models_ready = threading.Event()
 
 def _load_models_thread():
     global _models
+    print("Loading AI model in background...")
     _models = load_models()
+    print("AI model ready.")
     _models_ready.set()
 
 
@@ -80,10 +82,12 @@ class ReviewState:
                     continue
 
                 if result is None:
+                    print(f"  No person: {cr3.name}")
                     with self._lock:
                         self.skipped += 1
                     continue
 
+                print(f"  Ready:     {cr3.name}")
                 self._prefetch_q.put(result)  # blocks if queue is full (backpressure)
         finally:
             self._prefetch_q.put(None)  # sentinel always sent, even after an unexpected error
@@ -95,6 +99,7 @@ class ReviewState:
             if result is None:
                 with self._lock:
                     self.status = "done"
+                print(f"Session complete — cropped: {self.accepted}, skipped: {self.rejected}, no person/already done: {self.skipped}")
                 return
 
             with self._lock:
@@ -108,7 +113,9 @@ class ReviewState:
                     d = self.current
                     write_xmp(d["cr3_path"], d["x1"], d["y1"], d["x2"], d["y2"], d["w"], d["h"])
                     self.accepted += 1
+                    print(f"  Cropped:   {d['cr3_path'].name}")
                 else:
+                    print(f"  Skipped:   {self.current['cr3_path'].name}")
                     self.rejected += 1
                 self.current = None
                 self.status = "loading"
@@ -187,30 +194,43 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
 
         def _do_start():
             try:
+                print(f"Scanning {path} ...")
                 files = [p for p in path.rglob("*") if p.suffix.lower() == ".cr3"]
                 if not files:
                     app.config["start_error"] = "No CR3 files found in that folder"
+                    print("  No CR3 files found.")
                     return
 
                 n = len(files)
+                print(f"  Found {n} CR3 files. Reading capture times...")
                 app.config["start_stage"] = f"Reading capture times ({n} files)..."
                 workers = min(8, n)
                 with ThreadPoolExecutor(max_workers=workers) as pool:
                     times = list(pool.map(get_capture_time, files))
+
                 empty = sum(1 for t in times if not t)
                 if empty:
-                    print(f"  Warning: {empty}/{n} files had no readable timestamp — check EXIF parsing")
-                sample = [(f.name, t) for f, t in zip(files, times) if t][:3]
-                for name, t in sample:
-                    print(f"  Sample timestamp: {name} → {t}")
+                    print(f"  Warning: {empty}/{n} files had no readable timestamp")
+                else:
+                    print(f"  All {n} timestamps read successfully")
+                for name, t in [(f.name, t) for f, t in zip(files, times) if t][:3]:
+                    print(f"    {name} → {t}")
+
                 cr3_files = [
                     f for _, f in sorted(zip(times, files), key=lambda x: (x[0], str(x[1])))
                 ]
+                if cr3_files:
+                    already_done = sum(1 for f in cr3_files if has_existing_crop(f))
+                    print(f"  Sort order: {cr3_files[0].name} … {cr3_files[-1].name}")
+                    print(f"  {already_done}/{n} already have crop data (will be skipped)")
 
                 if not _models_ready.is_set():
+                    print("  Waiting for AI model to finish loading...")
                     app.config["start_stage"] = "Loading AI model..."
                     _models_ready.wait()
 
+                eligible = sum(1 for f in cr3_files if app.config["force"] or not has_existing_crop(f))
+                print(f"  Starting review session: {eligible} photos to review")
                 app.config["start_stage"] = f"Preparing {n} photos..."
                 app.config["review_state"] = ReviewState(
                     cr3_files, _models,
@@ -219,6 +239,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 )
             except Exception as e:
                 app.config["start_error"] = str(e)
+                print(f"  Error during startup: {e}")
             finally:
                 app.config["start_stage"] = None
 
