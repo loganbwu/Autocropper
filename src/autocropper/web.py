@@ -45,24 +45,20 @@ class ReviewState:
     """Producer/consumer design: producer pre-processes up to PREFETCH images ahead,
     consumer presents them and waits for decisions. The user rarely waits."""
 
-    def __init__(self, files, models, force=False, all_people=False, prefetch=PREFETCH_DEFAULT):
+    def __init__(self, files, models, all_people=False, prefetch=PREFETCH_DEFAULT, pre_skipped=0):
         self.files = files
         self.models = models
-        self.force = force
         self.all_people = all_people
         self.prefetch = prefetch
 
         self.accepted = 0
         self.rejected = 0
-        self.skipped = 0
+        self.skipped = pre_skipped
+        self.producer_processed = 0
         self.status = "loading"
         self.current = None
 
-        # Total files that will need review (excludes already-reviewed upfront).
-        # Decremented further as no-person or no-difference detections are found.
-        self.total_eligible = sum(
-            1 for f in files if force or not has_been_reviewed(f)
-        )
+        self.total_eligible = len(files)
 
         # Only processed results enter the queue (skips handled inline by producer).
         # Unbounded queue; backpressure is handled via _prefetch_cv so the limit
@@ -81,22 +77,13 @@ class ReviewState:
             return compute_crop(self.models, cr3, self.all_people, _inference_lock=self._inference_lock)
 
         try:
-            # Split files into already-reviewed (instant skip) and ones to process.
-            to_process = []
-            for cr3 in self.files:
-                if not self.force and has_been_reviewed(cr3):
-                    with self._lock:
-                        self.skipped += 1
-                else:
-                    to_process.append(cr3)
-
-            # Sliding-window thread pool: PROCESSING_WORKERS threads run exiftool and
-            # file I/O in parallel; the _inference_lock inside compute_crop serialises
-            # the GPU/MPS model call so at most one inference runs at a time.
-            # Results are collected in submission order so the review queue is ordered.
+            # Sliding-window thread pool: PROCESSING_WORKERS threads run file I/O in
+            # parallel; the _inference_lock inside compute_crop serialises the GPU/MPS
+            # model call so at most one inference runs at a time. Results are collected
+            # in submission order so the review queue is ordered.
             with ThreadPoolExecutor(max_workers=PROCESSING_WORKERS) as pool:
                 pending = collections.deque()
-                files_iter = iter(to_process)
+                files_iter = iter(self.files)
 
                 for cr3 in itertools.islice(files_iter, PROCESSING_WORKERS):
                     pending.append((cr3, pool.submit(_process, cr3)))
@@ -117,12 +104,16 @@ class ReviewState:
                         print(f"  Warning: skipping {cr3.name} — {e}")
                         with self._lock:
                             self.skipped += 1
+                            self.producer_processed += 1
                         continue
+
+                    with self._lock:
+                        self.producer_processed += 1
+                        if result is None:
+                            self.skipped += 1
 
                     if result is None:
                         print(f"  No person: {cr3.name}")
-                        with self._lock:
-                            self.skipped += 1
                         continue
 
                     print(f"  Ready:     {cr3.name}")
@@ -194,6 +185,7 @@ class ReviewState:
                 return {
                     "status": "loading",
                     "idx": done_count,
+                    "producer_idx": self.producer_processed,
                     "total": self.total_eligible,
                     "buffered": buffered,
                     "prefetch": self.prefetch,
@@ -258,19 +250,27 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                     return
 
                 n = len(files)
-                print(f"  Found {n} CR3 files. Reading capture times...")
-                app.config["start_stage"] = f"Reading capture times ({n} files)..."
+                print(f"  Found {n} CR3 files. Scanning...")
+                app.config["start_stage"] = f"Scanning {n} files..."
                 app.config["start_progress"] = 0.0
                 workers = min(8, n)
                 times_dict = {}
+                reviewed_set = set()
+
+                def _read_info(f):
+                    return get_capture_time(f), has_been_reviewed(f)
+
                 with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures = {pool.submit(get_capture_time, f): f for f in files}
+                    futures = {pool.submit(_read_info, f): f for f in files}
                     for i, future in enumerate(as_completed(futures), 1):
                         f = futures[future]
                         try:
-                            times_dict[f] = future.result()
+                            t, reviewed = future.result()
                         except Exception:
-                            times_dict[f] = ''
+                            t, reviewed = '', False
+                        times_dict[f] = t
+                        if reviewed:
+                            reviewed_set.add(f)
                         app.config["start_progress"] = i / n
                 times = [times_dict[f] for f in files]
                 app.config["start_progress"] = None
@@ -286,22 +286,25 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 cr3_files = [
                     f for _, f in sorted(zip(times, files), key=lambda x: (x[0], str(x[1])))
                 ]
+
+                force = app.config["force"]
+                already_reviewed = [f for f in cr3_files if not force and f in reviewed_set]
+                to_review = [f for f in cr3_files if force or f not in reviewed_set]
+
                 if cr3_files:
-                    already_done = sum(1 for f in cr3_files if has_been_reviewed(f))
                     print(f"  Sort order: {cr3_files[0].name} … {cr3_files[-1].name}")
-                    print(f"  {already_done}/{n} already reviewed (will be skipped)")
+                    print(f"  {len(already_reviewed)}/{n} already reviewed (will be skipped)")
 
                 if not _models_ready.is_set():
                     print("  Waiting for AI model to finish loading...")
                     app.config["start_stage"] = "Loading AI model..."
                     _models_ready.wait()
 
-                eligible = sum(1 for f in cr3_files if app.config["force"] or not has_been_reviewed(f))
-                print(f"  Starting review session: {eligible} photos to review, prefetch={PREFETCH_DEFAULT}")
+                print(f"  Starting review session: {len(to_review)} photos to review, prefetch={PREFETCH_DEFAULT}")
                 app.config["start_stage"] = f"Preparing {n} photos..."
                 app.config["review_state"] = ReviewState(
-                    cr3_files, _models,
-                    force=app.config["force"],
+                    to_review, _models,
+                    pre_skipped=len(already_reviewed),
                     all_people=app.config["all_people"],
                 )
             except Exception as e:

@@ -495,8 +495,9 @@
     const overlay = document.getElementById('overlay');
     overlay.classList.remove('hidden');
     document.getElementById('overlay-title').textContent = 'Processing...';
+    const analysed = data.producer_idx != null ? data.producer_idx : data.idx;
     const sub = data.total > 0
-      ? `Image ${data.idx} of ${data.total}`
+      ? `Analysing ${analysed} of ${data.total}`
       : 'Analysing images';
     document.getElementById('overlay-sub').textContent = sub;
     overlay.querySelector('.spinner').style.display = '';
