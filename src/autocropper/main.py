@@ -497,13 +497,7 @@ def main():
         else:
             no_people += 1
 
-    print(f"\n✓ Processed: {processed}")
-    if skipped > 0:
-        print(f"⊘ Skipped (already cropped): {skipped}")
-    if no_people > 0:
-        print(f"⊘ Skipped (no people detected): {no_people}")
-    if skipped > 0:
-        print(f"\nTip: Use --force to re-crop files that already have crops")
+    print(f"Done: {processed} cropped, {skipped} skipped, {no_people} no person detected")
 
 
 if __name__ == "__main__":
