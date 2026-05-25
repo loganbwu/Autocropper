@@ -21,7 +21,7 @@ from .main import (
     write_xmp,
 )
 
-PREFETCH = 10         # images to pre-process ahead; bounds peak RAM to ~PREFETCH × preview size
+PREFETCH = 20         # images to pre-process ahead; bounds peak RAM to ~PREFETCH × preview size
 PROCESSING_WORKERS = 4  # parallel exiftool + file-read threads; inference is still serialised
 
 # Models load eagerly in background so they're ready when the user picks a folder
