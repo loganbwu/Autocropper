@@ -349,12 +349,13 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False):
         if (x2 - x1) * (y2 - y1) / (w * h) > 0.96:
             return None
 
-        orig_bytes = preview.read_bytes()
+        img = apply_orientation(Image.open(preview).convert("RGB"), orientation)
+
+        orig_buf = io.BytesIO()
+        img.save(orig_buf, format="JPEG", quality=85)
 
         crop_buf = io.BytesIO()
-        apply_orientation(Image.open(preview).convert("RGB"), orientation).crop(
-            (int(x1), int(y1), int(x2), int(y2))
-        ).save(crop_buf, format="JPEG", quality=85)
+        img.crop((int(x1), int(y1), int(x2), int(y2))).save(crop_buf, format="JPEG", quality=85)
 
         return {
             "cr3_path": cr3_path,
