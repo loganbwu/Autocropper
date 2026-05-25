@@ -180,8 +180,8 @@ def web_main():
     parser.add_argument(
         "--port",
         type=int,
-        default=5000,
-        help="Port to run the web server on (default: 5000)",
+        default=5001,
+        help="Port to run the web server on (default: 5001)",
     )
 
     args = parser.parse_args()
@@ -201,7 +201,7 @@ def web_main():
     app = create_app(state)
 
     url = f"http://localhost:{args.port}"
-    print(f"Starting review UI at {url}")
+    print(f"Starting review UI at {url} (use --port to change)")
     webbrowser.open(url)
 
     app.run(host="0.0.0.0", port=args.port, debug=False, use_reloader=False)
