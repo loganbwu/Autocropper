@@ -53,10 +53,19 @@ def load_models():
 
     print(f"Loading models on {device}...")
 
-    gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True)
-    gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-        GDINO_MODEL, dtype=torch.float16
-    ).to(device).eval()
+    kwargs = {"local_files_only": True}
+    try:
+        gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True, **kwargs)
+        gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
+            GDINO_MODEL, dtype=torch.float16, **kwargs
+        ).to(device).eval()
+    except Exception:
+        # Not cached yet — download and cache
+        kwargs = {}
+        gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True)
+        gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
+            GDINO_MODEL, dtype=torch.float16
+        ).to(device).eval()
 
     return gdino_processor, gdino_model
 
