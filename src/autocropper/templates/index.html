@@ -25,6 +25,58 @@
       overflow: hidden;
     }
 
+    /* ── Folder picker screen ── */
+
+    #screen-picker {
+      position: fixed;
+      inset: 0;
+      background: var(--black);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      z-index: 200;
+    }
+
+    #screen-picker.hidden { display: none; }
+
+    #picker-title {
+      font-size: 28px;
+      font-weight: 400;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--white);
+    }
+
+    #picker-sub {
+      font-size: 14px;
+      color: var(--grey);
+    }
+
+    #btn-pick {
+      background: transparent;
+      border: 1px solid var(--pale-blue);
+      color: var(--pale-blue);
+      padding: 10px 28px;
+      font-family: Helvetica, sans-serif;
+      font-size: 14px;
+      cursor: pointer;
+      border-radius: 3px;
+      transition: background 0.15s;
+    }
+
+    #btn-pick:hover:not(:disabled) { background: rgba(173, 216, 230, 0.08); }
+    #btn-pick:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #picker-error {
+      font-size: 13px;
+      color: #e88;
+      min-height: 18px;
+    }
+
+    /* ── Review header ── */
+
     #header {
       flex: 0 0 auto;
       display: flex;
@@ -50,6 +102,8 @@
       width: 0%;
       transition: width 0.3s ease;
     }
+
+    /* ── Image panels ── */
 
     #panels {
       flex: 1 1 auto;
@@ -128,6 +182,8 @@
       color: var(--white);
     }
 
+    /* ── Loading / done overlay ── */
+
     #overlay {
       position: fixed;
       inset: 0;
@@ -172,12 +228,38 @@
     }
 
     #stats span { color: var(--white); font-weight: 600; }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid #555;
+      color: var(--paragraph-text-color);
+      padding: 8px 22px;
+      font-family: Helvetica, sans-serif;
+      font-size: 13px;
+      cursor: pointer;
+      border-radius: 3px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--pale-blue);
+      color: var(--pale-blue);
+    }
   </style>
 </head>
 <body>
 
+<!-- Folder picker screen -->
+<div id="screen-picker">
+  <div id="picker-title">Autocropper</div>
+  <div id="picker-sub">Select a folder of CR3 files to review</div>
+  <button id="btn-pick" onclick="pickFolder()">Select Folder</button>
+  <div id="picker-error"></div>
+</div>
+
+<!-- Review UI -->
 <div id="header">
-  <div id="filename">Loading...</div>
+  <div id="filename"></div>
   <div id="progress"></div>
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
@@ -197,13 +279,68 @@
 
 <div id="overlay">
   <div class="spinner"></div>
-  <div id="overlay-title">Loading models...</div>
+  <div id="overlay-title">Loading...</div>
   <div id="overlay-sub"></div>
 </div>
 
 <script>
+  const INITIAL_PATH = {{ initial_path | tojson }};
+
   let uiReady = false;
   let deciding = false;
+
+  // ── Folder picker ──────────────────────────────────────────
+
+  async function pickFolder() {
+    document.getElementById('btn-pick').disabled = true;
+    document.getElementById('picker-error').textContent = '';
+
+    const res = await fetch('/api/pick-folder');
+    const data = await res.json();
+
+    if (!data.path) {
+      // User cancelled the dialog
+      document.getElementById('btn-pick').disabled = false;
+      return;
+    }
+
+    await startWithPath(data.path);
+  }
+
+  async function startWithPath(path) {
+    document.getElementById('btn-pick').disabled = true;
+    document.getElementById('picker-sub').textContent = 'Loading...';
+    document.getElementById('picker-error').textContent = '';
+
+    const res = await fetch('/api/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path}),
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      document.getElementById('picker-error').textContent = data.error;
+      document.getElementById('picker-sub').textContent = 'Select a folder of CR3 files to review';
+      document.getElementById('btn-pick').disabled = false;
+      return;
+    }
+
+    document.getElementById('screen-picker').classList.add('hidden');
+    poll();
+  }
+
+  function showPicker() {
+    document.getElementById('overlay').classList.add('hidden');
+    document.getElementById('screen-picker').classList.remove('hidden');
+    document.getElementById('btn-pick').disabled = false;
+    document.getElementById('picker-sub').textContent = 'Select a folder of CR3 files to review';
+    document.getElementById('picker-error').textContent = '';
+    uiReady = false;
+    deciding = false;
+  }
+
+  // ── Review polling ─────────────────────────────────────────
 
   async function poll() {
     try {
@@ -223,7 +360,7 @@
 
       // ready
       showImage(data);
-      setTimeout(poll, 2000); // keep polling in case of stale state
+      setTimeout(poll, 2000);
     } catch (e) {
       setTimeout(poll, 1000);
     }
@@ -261,7 +398,13 @@
     overlay.classList.remove('hidden');
     overlay.querySelector('.spinner').style.display = 'none';
     document.getElementById('overlay-title').textContent = 'All done';
-    document.getElementById('overlay-sub').innerHTML = '';
+    document.getElementById('overlay-sub').textContent = '';
+    document.getElementById('progress-bar').style.width = '100%';
+    uiReady = false;
+
+    // Clear any previous stats/button
+    overlay.querySelectorAll('#stats, .btn-secondary').forEach(el => el.remove());
+
     const stats = document.createElement('div');
     stats.id = 'stats';
     stats.innerHTML = `
@@ -270,8 +413,12 @@
       <div>Already cropped / no person: <span>${data.skipped}</span></div>
     `;
     overlay.appendChild(stats);
-    uiReady = false;
-    document.getElementById('progress-bar').style.width = '100%';
+
+    const btn = document.createElement('button');
+    btn.textContent = 'Process another folder';
+    btn.className = 'btn-secondary';
+    btn.onclick = showPicker;
+    overlay.appendChild(btn);
   }
 
   async function decide(choice) {
@@ -296,7 +443,13 @@
     if (e.key === '2') decide('crop');
   });
 
-  poll();
+  // ── Entry point ────────────────────────────────────────────
+
+  if (INITIAL_PATH) {
+    document.getElementById('screen-picker').classList.add('hidden');
+    startWithPath(INITIAL_PATH);
+  }
+  // Otherwise the picker screen is visible and waiting for user interaction
 </script>
 </body>
 </html>

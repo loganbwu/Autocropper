@@ -3,6 +3,7 @@
 import argparse
 import base64
 import queue
+import subprocess
 import threading
 import webbrowser
 from pathlib import Path
@@ -17,10 +18,17 @@ from .main import (
     write_xmp,
 )
 
-DEFAULT_ROOT = Path.home() / "Desktop/Test"
-
-
 PREFETCH = 10  # images to pre-process ahead; bounds peak RAM to ~PREFETCH × preview size
+
+# Models load eagerly in background so they're ready when the user picks a folder
+_models = None
+_models_ready = threading.Event()
+
+
+def _load_models_thread():
+    global _models
+    _models = load_models()
+    _models_ready.set()
 
 
 class ReviewState:
@@ -40,7 +48,7 @@ class ReviewState:
         self.current = None
 
         # Total files that will need review (excludes already-cropped upfront).
-        # Decremented further as no-person detections are found during processing.
+        # Decremented further as no-person or no-difference detections are found.
         self.total_eligible = sum(
             1 for f in files if force or not has_existing_crop(f)
         )
@@ -133,24 +141,68 @@ class ReviewState:
             }
 
 
-def create_app(state: ReviewState) -> Flask:
+def create_app(initial_path: str = "", force: bool = False, all_people: bool = False) -> Flask:
     app = Flask(__name__)
-    app.config["state"] = state
+    app.config["review_state"] = None
+    app.config["initial_path"] = initial_path
+    app.config["force"] = force
+    app.config["all_people"] = all_people
 
     @app.route("/")
     def index():
-        return render_template("index.html")
+        return render_template("index.html", initial_path=app.config["initial_path"])
+
+    @app.route("/api/pick-folder")
+    def api_pick_folder():
+        result = subprocess.run(
+            ["osascript", "-e", 'choose folder with prompt "Select a folder of CR3 files"'],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            return jsonify({"path": None})
+        raw = result.stdout.strip()
+        # osascript returns an alias like "Macintosh HD:Users:foo:bar:"
+        parts = raw.split(":")
+        path = "/" + "/".join(p for p in parts[1:] if p)
+        return jsonify({"path": path})
+
+    @app.route("/api/start", methods=["POST"])
+    def api_start():
+        data = request.json
+        path = Path(data.get("path", "")).expanduser().resolve()
+
+        if not path.exists():
+            return jsonify({"error": f"Path does not exist: {path}"}), 400
+
+        cr3_files = find_cr3_files(path)
+        if not cr3_files:
+            return jsonify({"error": "No CR3 files found in that folder"}), 400
+
+        _models_ready.wait()  # blocks until models finish loading (usually instant)
+
+        app.config["review_state"] = ReviewState(
+            cr3_files, _models,
+            force=app.config["force"],
+            all_people=app.config["all_people"],
+        )
+        return jsonify({"ok": True, "count": len(cr3_files)})
 
     @app.route("/api/state")
     def api_state():
-        return jsonify(app.config["state"].get_state())
+        state = app.config["review_state"]
+        if state is None:
+            return jsonify({"status": "waiting", "models_ready": _models_ready.is_set()})
+        return jsonify(state.get_state())
 
     @app.route("/api/decide", methods=["POST"])
     def api_decide():
+        state = app.config["review_state"]
+        if state is None:
+            return jsonify({"error": "no active session"}), 400
         choice = request.json.get("choice")
         if choice not in ("crop", "skip"):
             return jsonify({"error": "invalid choice"}), 400
-        app.config["state"].decide(choice)
+        state.decide(choice)
         return jsonify({"ok": True})
 
     return app
@@ -163,9 +215,9 @@ def web_main():
     parser.add_argument(
         "path",
         nargs="?",
-        default=DEFAULT_ROOT,
-        type=Path,
-        help="Folder containing CR3 files (default: ~/Desktop/Test)",
+        default="",
+        type=str,
+        help="Folder containing CR3 files (optional — can be selected in the browser)",
     )
     parser.add_argument(
         "-f", "--force",
@@ -185,20 +237,17 @@ def web_main():
     )
 
     args = parser.parse_args()
-    root = args.path.expanduser().resolve()
 
-    if not root.exists():
-        raise SystemExit(f"Path does not exist: {root}")
+    initial_path = ""
+    if args.path:
+        root = Path(args.path).expanduser().resolve()
+        if not root.exists():
+            raise SystemExit(f"Path does not exist: {root}")
+        initial_path = str(root)
 
-    cr3_files = find_cr3_files(root)
-    if not cr3_files:
-        raise SystemExit(f"No CR3 files found under: {root}")
+    threading.Thread(target=_load_models_thread, daemon=True).start()
 
-    print(f"Found {len(cr3_files)} CR3 file(s). Loading models...")
-    models = load_models()
-
-    state = ReviewState(cr3_files, models, force=args.force, all_people=args.all_people)
-    app = create_app(state)
+    app = create_app(initial_path=initial_path, force=args.force, all_people=args.all_people)
 
     url = f"http://localhost:{args.port}"
     print(f"Starting review UI at {url} (use --port to change)")
