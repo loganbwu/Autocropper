@@ -307,13 +307,28 @@ def write_decline_marker(cr3_path: Path):
         )
 
 
+def _display_to_sensor_crop(left, top, right, bottom, orientation):
+    """Rotate crop fractions from display (post-rotation) to sensor (pre-rotation) space.
+
+    Lightroom interprets CropLeft/Top/Right/Bottom relative to the sensor image
+    before any EXIF rotation is applied.
+    """
+    if orientation == 6:    # 90° CW
+        return top, 1-right, bottom, 1-left
+    elif orientation == 8:  # 90° CCW
+        return 1-bottom, left, 1-top, right
+    elif orientation == 3:  # 180°
+        return 1-right, 1-bottom, 1-left, 1-top
+    return left, top, right, bottom
+
+
 def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
     xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
 
-    left = x1 / w
-    top = y1 / h
-    right = x2 / w
-    bottom = y2 / h
+    orientation = get_orientation(cr3_path)
+    left, top, right, bottom = _display_to_sensor_crop(
+        x1 / w, y1 / h, x2 / w, y2 / h, orientation
+    )
 
     crop_block = (
         f'   <crs:HasCrop>True</crs:HasCrop>\n'
