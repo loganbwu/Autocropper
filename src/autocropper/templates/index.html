@@ -91,6 +91,22 @@
     #filename { font-weight: 600; color: var(--white); }
     #progress { color: var(--grey); }
 
+    #buffer-indicator {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .buf-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 1px;
+      background: #333;
+      transition: background 0.3s;
+    }
+
+    .buf-dot.ready { background: var(--pale-blue); }
+
     #progress-bar-wrap {
       flex: 0 0 auto;
       height: 3px;
@@ -260,6 +276,9 @@
 <!-- Review UI -->
 <div id="header">
   <div id="filename"></div>
+  <div id="buffer-indicator">
+    {% for _ in range(prefetch) %}<div class="buf-dot"></div>{% endfor %}
+  </div>
   <div id="progress"></div>
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
@@ -366,6 +385,12 @@
     }
   }
 
+  function updateBuffer(buffered) {
+    document.querySelectorAll('.buf-dot').forEach((dot, i) => {
+      dot.classList.toggle('ready', i < buffered);
+    });
+  }
+
   function showLoading(data) {
     const overlay = document.getElementById('overlay');
     overlay.classList.remove('hidden');
@@ -375,6 +400,7 @@
       : 'Analysing images';
     document.getElementById('overlay-sub').textContent = sub;
     overlay.querySelector('.spinner').style.display = '';
+    updateBuffer(data.buffered || 0);
     uiReady = false;
     deciding = false;
   }
@@ -389,6 +415,7 @@
     document.getElementById('progress-bar').style.width = pct + '%';
     document.getElementById('panel-orig').classList.remove('selected');
     document.getElementById('panel-crop').classList.remove('selected');
+    updateBuffer(data.buffered || 0);
     uiReady = true;
     deciding = false;
   }

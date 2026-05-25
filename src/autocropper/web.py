@@ -124,11 +124,13 @@ class ReviewState:
                     "rejected": self.rejected,
                     "skipped": self.skipped,
                 }
+            buffered = self._prefetch_q.qsize()
             if self.status == "loading" or self.current is None:
                 return {
                     "status": "loading",
                     "idx": done_count,
                     "total": self.total_eligible,
+                    "buffered": buffered,
                 }
             d = self.current
             return {
@@ -136,6 +138,7 @@ class ReviewState:
                 "filename": d["cr3_path"].name,
                 "idx": done_count + 1,
                 "total": self.total_eligible,
+                "buffered": buffered,
                 "orig_b64": base64.b64encode(d["orig_bytes"]).decode(),
                 "crop_b64": base64.b64encode(d["crop_bytes"]).decode(),
             }
@@ -150,7 +153,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
 
     @app.route("/")
     def index():
-        return render_template("index.html", initial_path=app.config["initial_path"])
+        return render_template("index.html", initial_path=app.config["initial_path"], prefetch=PREFETCH)
 
     @app.route("/api/pick-folder")
     def api_pick_folder():
