@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageOps
 from tqdm import tqdm
 
 # ---------------- CONFIG ----------------
@@ -65,7 +65,7 @@ def detect_people_with_masks(models, image_path: Path):
     gdino_processor, gdino_model = models
     device = next(gdino_model.parameters()).device
 
-    image = Image.open(image_path).convert("RGB")
+    image = ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
     w, h = image.size
 
     gdino_inputs = gdino_processor(images=image, text=TEXT_PROMPT, return_tensors="pt")
@@ -334,10 +334,15 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False):
         x1, y1, x2, y2 = limit_zoom(x1, y1, x2, y2, w, h, person_cx)
         x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
 
+        # Skip if the crop is effectively the full frame (no meaningful difference)
+        if (x2 - x1) * (y2 - y1) / (w * h) > 0.96:
+            return None
+
         orig_bytes = preview.read_bytes()
 
         crop_buf = io.BytesIO()
-        Image.open(preview).convert("RGB").crop(
+        # exif_transpose so crop is in the same orientation as the displayed original
+        ImageOps.exif_transpose(Image.open(preview)).convert("RGB").crop(
             (int(x1), int(y1), int(x2), int(y2))
         ).save(crop_buf, format="JPEG", quality=85)
 
