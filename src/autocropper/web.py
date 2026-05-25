@@ -16,8 +16,10 @@ from flask import Flask, jsonify, render_template, request
 from .main import (
     compute_crop,
     get_capture_time,
+    has_been_reviewed,
     has_existing_crop,
     load_models,
+    write_decline_marker,
     write_xmp,
 )
 
@@ -56,10 +58,10 @@ class ReviewState:
         self.status = "loading"
         self.current = None
 
-        # Total files that will need review (excludes already-cropped upfront).
+        # Total files that will need review (excludes already-reviewed upfront).
         # Decremented further as no-person or no-difference detections are found.
         self.total_eligible = sum(
-            1 for f in files if force or not has_existing_crop(f)
+            1 for f in files if force or not has_been_reviewed(f)
         )
 
         # Only processed results enter the queue (skips handled inline by producer).
@@ -77,10 +79,10 @@ class ReviewState:
             return compute_crop(self.models, cr3, self.all_people, _inference_lock=self._inference_lock)
 
         try:
-            # Split files into already-cropped (instant skip) and ones to process.
+            # Split files into already-reviewed (instant skip) and ones to process.
             to_process = []
             for cr3 in self.files:
-                if not self.force and has_existing_crop(cr3):
+                if not self.force and has_been_reviewed(cr3):
                     with self._lock:
                         self.skipped += 1
                 else:
@@ -149,7 +151,9 @@ class ReviewState:
                     self.accepted += 1
                     print(f"  Cropped:   {d['cr3_path'].name}")
                 else:
-                    print(f"  Skipped:   {self.current['cr3_path'].name}")
+                    d = self.current
+                    write_decline_marker(d["cr3_path"])
+                    print(f"  Declined:  {d['cr3_path'].name}")
                     self.rejected += 1
                 self.current = None
                 self.status = "loading"
@@ -261,16 +265,16 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                     f for _, f in sorted(zip(times, files), key=lambda x: (x[0], str(x[1])))
                 ]
                 if cr3_files:
-                    already_done = sum(1 for f in cr3_files if has_existing_crop(f))
+                    already_done = sum(1 for f in cr3_files if has_been_reviewed(f))
                     print(f"  Sort order: {cr3_files[0].name} … {cr3_files[-1].name}")
-                    print(f"  {already_done}/{n} already have crop data (will be skipped)")
+                    print(f"  {already_done}/{n} already reviewed (will be skipped)")
 
                 if not _models_ready.is_set():
                     print("  Waiting for AI model to finish loading...")
                     app.config["start_stage"] = "Loading AI model..."
                     _models_ready.wait()
 
-                eligible = sum(1 for f in cr3_files if app.config["force"] or not has_existing_crop(f))
+                eligible = sum(1 for f in cr3_files if app.config["force"] or not has_been_reviewed(f))
                 prefetch = app.config["prefetch"]
                 print(f"  Starting review session: {eligible} photos to review, prefetch={prefetch}")
                 app.config["start_stage"] = f"Preparing {n} photos..."

@@ -250,19 +250,61 @@ CROP_TAGS = ('HasCrop', 'CropLeft', 'CropTop', 'CropRight', 'CropBottom', 'CropA
 
 
 def has_existing_crop(cr3_path: Path):
-    """Check if XMP file exists and already has crop data"""
+    """True if an XMP with HasCrop=True exists (crop was applied)."""
     xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
-
     if not xmp_path.exists():
         return False
-
     try:
         content = xmp_path.read_text()
-        # Match both element form (<crs:HasCrop>True</crs:HasCrop>)
-        # and attribute form (crs:HasCrop="True") written by Lightroom
         return bool(re.search(r'crs:HasCrop[=>"\s]*(True|true|1)', content))
     except Exception:
         return False
+
+
+def has_been_reviewed(cr3_path: Path):
+    """True if a review decision has already been recorded (crop applied OR declined)."""
+    xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
+    if not xmp_path.exists():
+        return False
+    try:
+        content = xmp_path.read_text()
+        return bool(re.search(r'crs:HasCrop[=>"\s]*(True|False|true|false|1|0)', content))
+    except Exception:
+        return False
+
+
+def write_decline_marker(cr3_path: Path):
+    """Record that the crop was reviewed and declined (HasCrop=False).
+
+    Written so the file is skipped on restart without re-reviewing it.
+    Lightroom treats HasCrop=False as 'no crop', which is correct.
+    """
+    xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
+    decline_tag = '   <crs:HasCrop>False</crs:HasCrop>\n'
+
+    if xmp_path.exists():
+        content = xmp_path.read_text()
+        for tag in CROP_TAGS:
+            content = re.sub(rf'\s*<crs:{tag}>.*?</crs:{tag}>', '', content)
+        for tag in CROP_TAGS:
+            content = re.sub(rf'\s*crs:{tag}="[^"]*"', '', content)
+        last_close = content.rfind('</rdf:Description>')
+        if last_close != -1:
+            content = content[:last_close] + decline_tag + '  ' + content[last_close:]
+        xmp_path.write_text(content)
+    else:
+        xmp_path.write_text(
+            '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
+            ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+            '  <rdf:Description rdf:about=""\n'
+            '    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">\n'
+            + decline_tag +
+            '  </rdf:Description>\n'
+            ' </rdf:RDF>\n'
+            '</x:xmpmeta>\n'
+            '<?xpacket end="w"?>'
+        )
 
 
 def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
