@@ -8,7 +8,7 @@ import queue
 import subprocess
 import threading
 import webbrowser
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -214,8 +214,9 @@ class ReviewState:
 def create_app(initial_path: str = "", force: bool = False, all_people: bool = False) -> Flask:
     app = Flask(__name__)
     app.config["review_state"] = None
-    app.config["start_stage"] = None   # str while starting, None otherwise
-    app.config["start_error"] = None   # str if start failed
+    app.config["start_stage"] = None     # str while starting, None otherwise
+    app.config["start_progress"] = None  # float 0-1 during linear stages, None otherwise
+    app.config["start_error"] = None     # str if start failed
     app.config["initial_path"] = initial_path
     app.config["force"] = force
     app.config["all_people"] = all_people
@@ -259,9 +260,20 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 n = len(files)
                 print(f"  Found {n} CR3 files. Reading capture times...")
                 app.config["start_stage"] = f"Reading capture times ({n} files)..."
+                app.config["start_progress"] = 0.0
                 workers = min(8, n)
+                times_dict = {}
                 with ThreadPoolExecutor(max_workers=workers) as pool:
-                    times = list(pool.map(get_capture_time, files))
+                    futures = {pool.submit(get_capture_time, f): f for f in files}
+                    for i, future in enumerate(as_completed(futures), 1):
+                        f = futures[future]
+                        try:
+                            times_dict[f] = future.result()
+                        except Exception:
+                            times_dict[f] = ''
+                        app.config["start_progress"] = i / n
+                times = [times_dict[f] for f in files]
+                app.config["start_progress"] = None
 
                 empty = sum(1 for t in times if not t)
                 if empty:
@@ -310,7 +322,8 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
 
         stage = app.config.get("start_stage")
         if stage is not None:
-            return jsonify({"status": "starting", "stage": stage})
+            return jsonify({"status": "starting", "stage": stage,
+                            "progress": app.config.get("start_progress")})
 
         state = app.config["review_state"]
         if state is None:

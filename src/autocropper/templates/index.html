@@ -257,6 +257,21 @@
 
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    #overlay-progress-wrap {
+      width: 260px;
+      height: 3px;
+      background: #333;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    #overlay-progress-bar {
+      height: 100%;
+      background: var(--pale-blue);
+      width: 0%;
+      transition: width 0.25s ease;
+    }
+
     #stats {
       font-size: 14px;
       color: var(--paragraph-text-color);
@@ -321,6 +336,9 @@
   <div class="spinner"></div>
   <div id="overlay-title">Loading...</div>
   <div id="overlay-sub"></div>
+  <div id="overlay-progress-wrap" style="display:none">
+    <div id="overlay-progress-bar"></div>
+  </div>
 </div>
 
 <script>
@@ -387,8 +405,8 @@
       }
 
       if (data.status === 'starting') {
-        showStarting(data.stage);
-        setTimeout(poll, 600);
+        showStarting(data.stage, data.progress);
+        setTimeout(poll, data.progress != null ? 250 : 600);
         return;
       }
 
@@ -411,12 +429,21 @@
     }
   }
 
-  function showStarting(stage) {
+  function showStarting(stage, progress) {
     const overlay = document.getElementById('overlay');
     overlay.classList.remove('hidden');
     overlay.querySelector('.spinner').style.display = '';
     document.getElementById('overlay-title').textContent = 'Starting...';
     document.getElementById('overlay-sub').textContent = stage || '';
+    const wrap = document.getElementById('overlay-progress-wrap');
+    const bar  = document.getElementById('overlay-progress-bar');
+    if (progress != null) {
+      wrap.style.display = '';
+      bar.style.width = (progress * 100).toFixed(1) + '%';
+    } else {
+      wrap.style.display = 'none';
+      bar.style.width = '0%';
+    }
     uiReady = false;
     deciding = false;
   }
