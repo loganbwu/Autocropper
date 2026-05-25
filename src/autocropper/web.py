@@ -63,24 +63,32 @@ class ReviewState:
         threading.Thread(target=self._consumer, daemon=True).start()
 
     def _producer(self):
-        for cr3 in self.files:
-            if not self.force and has_existing_crop(cr3):
-                with self._lock:
-                    self.skipped += 1
-                    self.total_eligible -= 1
-                continue
+        try:
+            for cr3 in self.files:
+                if not self.force and has_existing_crop(cr3):
+                    with self._lock:
+                        self.skipped += 1
+                        self.total_eligible -= 1
+                    continue
 
-            result = compute_crop(self.models, cr3, self.all_people)
+                try:
+                    result = compute_crop(self.models, cr3, self.all_people)
+                except Exception as e:
+                    print(f"  Warning: skipping {cr3.name} — {e}")
+                    with self._lock:
+                        self.skipped += 1
+                        self.total_eligible -= 1
+                    continue
 
-            if result is None:
-                with self._lock:
-                    self.skipped += 1
-                    self.total_eligible -= 1
-                continue
+                if result is None:
+                    with self._lock:
+                        self.skipped += 1
+                        self.total_eligible -= 1
+                    continue
 
-            self._prefetch_q.put(result)  # blocks if queue is full (backpressure)
-
-        self._prefetch_q.put(None)  # sentinel
+                self._prefetch_q.put(result)  # blocks if queue is full (backpressure)
+        finally:
+            self._prefetch_q.put(None)  # sentinel always sent, even after an unexpected error
 
     def _consumer(self):
         while True:

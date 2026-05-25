@@ -28,17 +28,14 @@ DEFAULT_ROOT = Path.home() / "Desktop/Test"
 
 
 def extract_preview_jpeg(cr3_path: Path, out_jpg: Path):
-    subprocess.run(
-        [
-            "exiftool",
-            "-b",
-            "-PreviewImage",
-            str(cr3_path),
-        ],
-        stdout=open(out_jpg, "wb"),
-        stderr=subprocess.DEVNULL,
-        check=True,
-    )
+    with open(out_jpg, "wb") as f:
+        subprocess.run(
+            ["exiftool", "-b", "-PreviewImage", str(cr3_path)],
+            stdout=f,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=30,
+        )
 
 
 def load_models():
