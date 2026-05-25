@@ -477,14 +477,18 @@
   function setPrefetch(val) {
     clearTimeout(_prefetchTimer);
     _prefetchTimer = setTimeout(async () => {
-      const n = parseInt(val);
-      if (!n || n < 1) return;
+      let n = parseInt(val);
+      if (!n || isNaN(n)) return;
+      n = Math.max({{ prefetch_min }}, Math.min({{ prefetch_max }}, n));
+      // Snap the input to the clamped value so it always matches the dots
+      const inp = document.getElementById('review-prefetch');
+      if (inp) inp.value = n;
       await fetch('/api/set-prefetch', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({prefetch: n}),
       });
-    }, 400);  // debounce: wait for user to stop typing
+    }, 400);
   }
 
   function showLoading(data) {
