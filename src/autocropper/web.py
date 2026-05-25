@@ -243,13 +243,9 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
         if not path.exists():
             return jsonify({"error": f"Path does not exist: {path}"}), 400
 
-        prefetch = int(data.get("prefetch", PREFETCH_DEFAULT))
-        prefetch = max(PREFETCH_MIN, min(PREFETCH_MAX, prefetch))
-
         app.config["review_state"] = None
         app.config["start_error"] = None
         app.config["start_stage"] = "Scanning folder..."
-        app.config["prefetch"] = prefetch
 
         def _do_start():
             try:
@@ -289,14 +285,12 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                     _models_ready.wait()
 
                 eligible = sum(1 for f in cr3_files if app.config["force"] or not has_been_reviewed(f))
-                prefetch = app.config["prefetch"]
-                print(f"  Starting review session: {eligible} photos to review, prefetch={prefetch}")
+                print(f"  Starting review session: {eligible} photos to review, prefetch={PREFETCH_DEFAULT}")
                 app.config["start_stage"] = f"Preparing {n} photos..."
                 app.config["review_state"] = ReviewState(
                     cr3_files, _models,
                     force=app.config["force"],
                     all_people=app.config["all_people"],
-                    prefetch=prefetch,
                 )
             except Exception as e:
                 app.config["start_error"] = str(e)
