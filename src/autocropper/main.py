@@ -6,6 +6,7 @@ import re
 import struct
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -454,10 +455,21 @@ def _read_tiff_tag(tiff: bytes, tag: int):
     return None
 
 
+def _read_cr3_header(cr3_path: Path, max_bytes: int = 2_000_000) -> bytes:
+    """Read only the first max_bytes of a CR3 file.
+
+    The moov/CMT boxes always appear near the start of Canon CR3 files
+    (before the large CRAW image-data box), so 2 MB is sufficient for
+    all EXIF metadata while avoiding loading the full 40–100 MB RAW.
+    """
+    with open(cr3_path, 'rb') as f:
+        return f.read(max_bytes)
+
+
 def get_capture_time(cr3_path: Path) -> str:
     """Return DateTimeOriginal string ('YYYY:MM:DD HH:MM:SS') or '' on failure."""
     try:
-        cmt2 = _cr3_cmt_box(cr3_path.read_bytes(), b'CMT2')
+        cmt2 = _cr3_cmt_box(_read_cr3_header(cr3_path), b'CMT2')
         if cmt2 is not None:
             ts = _read_tiff_tag(cmt2, _DTO_TAG)
             if ts:
@@ -470,7 +482,7 @@ def get_capture_time(cr3_path: Path) -> str:
 def get_orientation(cr3_path: Path) -> int:
     """Return EXIF Orientation (1–8) from IFD0/CMT1, or 1 (normal) on failure."""
     try:
-        cmt1 = _cr3_cmt_box(cr3_path.read_bytes(), b'CMT1')
+        cmt1 = _cr3_cmt_box(_read_cr3_header(cr3_path), b'CMT1')
         if cmt1 is not None:
             val = _read_tiff_tag(cmt1, _ORIENTATION_TAG)
             if val is not None:
@@ -487,7 +499,10 @@ def apply_orientation(img: Image.Image, orientation: int) -> Image.Image:
 
 def find_cr3_files(root: Path):
     files = [p for p in root.rglob("*") if p.suffix.lower() == ".cr3"]
-    return sorted(files, key=lambda p: (get_capture_time(p), p.name))
+    workers = min(8, len(files)) if files else 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        times = list(pool.map(get_capture_time, files))
+    return [f for _, f in sorted(zip(times, files), key=lambda x: (x[0], x[1].name))]
 
 
 def main():
