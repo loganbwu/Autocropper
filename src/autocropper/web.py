@@ -68,7 +68,6 @@ class ReviewState:
                 if not self.force and has_existing_crop(cr3):
                     with self._lock:
                         self.skipped += 1
-                        self.total_eligible -= 1
                     continue
 
                 try:
@@ -77,13 +76,11 @@ class ReviewState:
                     print(f"  Warning: skipping {cr3.name} — {e}")
                     with self._lock:
                         self.skipped += 1
-                        self.total_eligible -= 1
                     continue
 
                 if result is None:
                     with self._lock:
                         self.skipped += 1
-                        self.total_eligible -= 1
                     continue
 
                 self._prefetch_q.put(result)  # blocks if queue is full (backpressure)

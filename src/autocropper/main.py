@@ -358,7 +358,7 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False):
             "cr3_path": cr3_path,
             "x1": x1, "y1": y1, "x2": x2, "y2": y2,
             "w": w, "h": h,
-            "orig_bytes": orig_bytes,
+            "orig_bytes": orig_buf.getvalue(),
             "crop_bytes": crop_buf.getvalue(),
         }
 
