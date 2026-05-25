@@ -29,7 +29,7 @@ PREFETCH_MIN = 1
 PREFETCH_MAX = 100
 PROCESSING_WORKERS = 4  # parallel exiftool + file-read threads; inference is still serialised
 
-MARGIN_DEFAULT = 0.10
+MARGIN_DEFAULT = 0.20
 MARGIN_MIN = 0.00
 MARGIN_MAX = 0.50
 

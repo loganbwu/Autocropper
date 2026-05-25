@@ -19,7 +19,7 @@ from tqdm import tqdm
 GDINO_MODEL = "IDEA-Research/grounding-dino-tiny"
 TEXT_PROMPT = "dancing person."   # Grounding DINO requires a trailing period
 CONFIDENCE  = 0.3        # Box and text threshold for Grounding DINO
-MARGIN_RATIO = 0.10      # Margin around merged box
+MARGIN_RATIO = 0.20      # Margin around merged box
 INSTAGRAM_RATIO = 5 / 4  # Instagram's widest feed crop (5:4 landscape / 4:5 portrait)
 MAX_ZOOM = 0.5           # Don't zoom in more than this fraction of the image width
 
