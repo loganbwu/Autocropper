@@ -5,12 +5,11 @@ import contextlib
 import io
 import re
 import struct
-import subprocess
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+import rawpy
 import torch
 from PIL import Image
 from tqdm import tqdm
@@ -29,15 +28,13 @@ DEFAULT_ROOT = Path.home() / "Desktop/Test"
 # ----------------------------------------
 
 
-def extract_preview_jpeg(cr3_path: Path, out_jpg: Path):
-    with open(out_jpg, "wb") as f:
-        subprocess.run(
-            ["exiftool", "-b", "-PreviewImage", str(cr3_path)],
-            stdout=f,
-            stderr=subprocess.DEVNULL,
-            check=True,
-            timeout=30,
-        )
+def extract_preview_image(cr3_path: Path) -> Image.Image:
+    """Extract the largest embedded JPEG preview from a CR3 file using libraw."""
+    with rawpy.imread(str(cr3_path)) as raw:
+        thumb = raw.extract_thumb()
+        if thumb.format == rawpy.ThumbFormat.JPEG:
+            return Image.open(io.BytesIO(bytes(thumb.data))).convert("RGB")
+        return Image.fromarray(thumb.data).convert("RGB")
 
 
 def load_models():
@@ -69,11 +66,10 @@ def load_models():
     return gdino_processor, gdino_model
 
 
-def detect_people_with_masks(models, image_path: Path, orientation: int = 1):
+def detect_people_with_masks(models, image: Image.Image):
     gdino_processor, gdino_model = models
     device = next(gdino_model.parameters()).device
 
-    image = apply_orientation(Image.open(image_path).convert("RGB"), orientation)
     w, h = image.size
 
     gdino_inputs = gdino_processor(images=image, text=TEXT_PROMPT, return_tensors="pt")
@@ -331,48 +327,44 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lo
     multiple worker threads are used (concurrent inference corrupts MPS state).
     """
     orientation = get_orientation(cr3_path)
+    img = apply_orientation(extract_preview_image(cr3_path), orientation)
+    w, h = img.size
 
-    with tempfile.TemporaryDirectory() as tmp:
-        preview = Path(tmp) / "preview.jpg"
-        extract_preview_jpeg(cr3_path, preview)
+    lock_ctx = _inference_lock if _inference_lock is not None else contextlib.nullcontext()
+    with lock_ctx:
+        boxes, hulls, w, h = detect_people_with_masks(models, img)
 
-        lock_ctx = _inference_lock if _inference_lock is not None else contextlib.nullcontext()
-        with lock_ctx:
-            boxes, hulls, w, h = detect_people_with_masks(models, preview, orientation)
+    if not boxes and not hulls:
+        return None
 
-        if not boxes and not hulls:
-            return None
+    if not all_people:
+        boxes, hulls = select_main_person(boxes, hulls)
 
-        if not all_people:
-            boxes, hulls = select_main_person(boxes, hulls)
+    x1, y1, x2, y2 = merged_envelope(boxes, hulls)
+    person_cx = (x1 + x2) / 2
+    x1, y1, x2, y2 = expand_with_margin(x1, y1, x2, y2, w, h)
+    x1, y1, x2, y2 = expand_for_instagram_safe_zone(x1, y1, x2, y2, w, h)
+    x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
+    x1, y1, x2, y2 = limit_zoom(x1, y1, x2, y2, w, h, person_cx)
+    x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
 
-        x1, y1, x2, y2 = merged_envelope(boxes, hulls)
-        person_cx = (x1 + x2) / 2
-        x1, y1, x2, y2 = expand_with_margin(x1, y1, x2, y2, w, h)
-        x1, y1, x2, y2 = expand_for_instagram_safe_zone(x1, y1, x2, y2, w, h)
-        x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
-        x1, y1, x2, y2 = limit_zoom(x1, y1, x2, y2, w, h, person_cx)
-        x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
+    # Skip if the crop is effectively the full frame (no meaningful difference)
+    if (x2 - x1) * (y2 - y1) / (w * h) > 0.96:
+        return None
 
-        # Skip if the crop is effectively the full frame (no meaningful difference)
-        if (x2 - x1) * (y2 - y1) / (w * h) > 0.96:
-            return None
+    orig_buf = io.BytesIO()
+    img.save(orig_buf, format="JPEG", quality=85)
 
-        img = apply_orientation(Image.open(preview).convert("RGB"), orientation)
+    crop_buf = io.BytesIO()
+    img.crop((int(x1), int(y1), int(x2), int(y2))).save(crop_buf, format="JPEG", quality=85)
 
-        orig_buf = io.BytesIO()
-        img.save(orig_buf, format="JPEG", quality=85)
-
-        crop_buf = io.BytesIO()
-        img.crop((int(x1), int(y1), int(x2), int(y2))).save(crop_buf, format="JPEG", quality=85)
-
-        return {
-            "cr3_path": cr3_path,
-            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-            "w": w, "h": h,
-            "orig_bytes": orig_buf.getvalue(),
-            "crop_bytes": crop_buf.getvalue(),
-        }
+    return {
+        "cr3_path": cr3_path,
+        "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+        "w": w, "h": h,
+        "orig_bytes": orig_buf.getvalue(),
+        "crop_bytes": crop_buf.getvalue(),
+    }
 
 
 def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = False):
