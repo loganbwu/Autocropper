@@ -104,7 +104,7 @@
       gap: 3px;
     }
 
-    #review-prefetch {
+    #review-prefetch, #review-margin {
       width: 46px;
       background: transparent;
       border: 1px solid #444;
@@ -116,7 +116,15 @@
       text-align: center;
     }
 
-    #review-prefetch:focus { outline: none; border-color: var(--pale-blue); color: var(--white); }
+    #review-prefetch:focus, #review-margin:focus { outline: none; border-color: var(--pale-blue); color: var(--white); }
+
+    #margin-control {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--grey);
+    }
 
     .buf-dot {
       width: 6px;
@@ -317,6 +325,12 @@
     <input id="review-prefetch" type="number" min="{{ prefetch_min }}" max="{{ prefetch_max }}"
            value="{{ prefetch_default }}" title="Buffer size" oninput="setPrefetch(this.value)">
   </div>
+  <div id="margin-control">
+    margin
+    <input id="review-margin" type="number" min="{{ margin_min }}" max="{{ margin_max }}"
+           value="{{ margin_default }}" title="Crop margin %" oninput="setMargin(this.value)">
+    %
+  </div>
   <div id="progress"></div>
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
@@ -488,6 +502,27 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({prefetch: n}),
       });
+    }, 400);
+  }
+
+  let _marginTimer = null;
+  function setMargin(val) {
+    clearTimeout(_marginTimer);
+    _marginTimer = setTimeout(async () => {
+      let pct = parseFloat(val);
+      if (isNaN(pct)) return;
+      pct = Math.max({{ margin_min }}, Math.min({{ margin_max }}, pct));
+      const inp = document.getElementById('review-margin');
+      if (inp) inp.value = pct;
+      const res = await fetch('/api/set-margin', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({margin: pct}),
+      });
+      const data = await res.json();
+      if (data.crop_b64) {
+        document.getElementById('img-crop').src = 'data:image/jpeg;base64,' + data.crop_b64;
+      }
     }, 400);
   }
 

@@ -19,6 +19,7 @@ from .main import (
     has_been_reviewed,
     has_existing_crop,
     load_models,
+    recompute_crop,
     write_decline_marker,
     write_xmp,
 )
@@ -27,6 +28,10 @@ PREFETCH_DEFAULT = 10  # default prefetch buffer; user can override in the UI
 PREFETCH_MIN = 1
 PREFETCH_MAX = 100
 PROCESSING_WORKERS = 4  # parallel exiftool + file-read threads; inference is still serialised
+
+MARGIN_DEFAULT = 0.10
+MARGIN_MIN = 0.00
+MARGIN_MAX = 0.50
 
 # Models load eagerly in background so they're ready when the user picks a folder
 _models = None
@@ -55,6 +60,7 @@ class ReviewState:
         self.rejected = 0
         self.skipped = pre_skipped
         self.producer_processed = 0
+        self.margin = MARGIN_DEFAULT
         self.status = "loading"
         self.current = None
 
@@ -74,7 +80,8 @@ class ReviewState:
 
     def _producer(self):
         def _process(cr3):
-            return compute_crop(self.models, cr3, self.all_people, _inference_lock=self._inference_lock)
+            return compute_crop(self.models, cr3, self.all_people,
+                                _inference_lock=self._inference_lock, margin_ratio=self.margin)
 
         try:
             # Sliding-window thread pool: PROCESSING_WORKERS threads run file I/O in
@@ -144,6 +151,7 @@ class ReviewState:
                 return
 
             with self._lock:
+                recompute_crop(result, self.margin)
                 self.current = result
                 self.status = "ready"
 
@@ -216,7 +224,8 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
     @app.route("/")
     def index():
         return render_template("index.html", initial_path=app.config["initial_path"],
-                               prefetch_default=PREFETCH_DEFAULT, prefetch_min=PREFETCH_MIN, prefetch_max=PREFETCH_MAX)
+                               prefetch_default=PREFETCH_DEFAULT, prefetch_min=PREFETCH_MIN, prefetch_max=PREFETCH_MAX,
+                               margin_default=int(MARGIN_DEFAULT * 100), margin_min=int(MARGIN_MIN * 100), margin_max=int(MARGIN_MAX * 100))
 
     @app.route("/api/pick-folder")
     def api_pick_folder():
@@ -343,6 +352,24 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
             return jsonify({"error": "invalid choice"}), 400
         state.decide(choice)
         return jsonify({"ok": True})
+
+    @app.route("/api/set-margin", methods=["POST"])
+    def api_set_margin():
+        state = app.config["review_state"]
+        if state is None:
+            return jsonify({"error": "no active session"}), 400
+        pct = request.json.get("margin")
+        if not isinstance(pct, (int, float)) or not (MARGIN_MIN * 100 <= pct <= MARGIN_MAX * 100):
+            return jsonify({"error": "invalid value"}), 400
+        margin = pct / 100.0
+        with state._lock:
+            state.margin = margin
+            d = state.current
+            if d is None:
+                return jsonify({"ok": True})
+            recompute_crop(d, margin)
+            crop_b64 = base64.b64encode(d["crop_bytes"]).decode()
+        return jsonify({"ok": True, "crop_b64": crop_b64})
 
     @app.route("/api/set-prefetch", methods=["POST"])
     def api_set_prefetch():

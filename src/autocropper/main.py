@@ -114,12 +114,12 @@ def merged_envelope(boxes, hulls):
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def expand_with_margin(x1, y1, x2, y2, w, h):
+def expand_with_margin(x1, y1, x2, y2, w, h, margin_ratio=MARGIN_RATIO):
     bw = x2 - x1
     bh = y2 - y1
 
-    mx = bw * MARGIN_RATIO
-    my = bh * MARGIN_RATIO
+    mx = bw * margin_ratio
+    my = bh * margin_ratio
 
     x1 -= mx
     x2 += mx
@@ -377,7 +377,8 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
         xmp_path.write_text(xmp)
 
 
-def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lock=None):
+def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lock=None,
+                 margin_ratio: float = MARGIN_RATIO):
     """Compute crop coordinates and return preview image bytes. Returns dict or None.
 
     _inference_lock: optional threading.Lock to serialise GPU/MPS model calls when
@@ -397,13 +398,10 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lo
     if not all_people:
         boxes, hulls = select_main_person(boxes, hulls)
 
-    x1, y1, x2, y2 = merged_envelope(boxes, hulls)
-    person_cx = (x1 + x2) / 2
-    x1, y1, x2, y2 = expand_with_margin(x1, y1, x2, y2, w, h)
-    x1, y1, x2, y2 = expand_for_instagram_safe_zone(x1, y1, x2, y2, w, h)
-    x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
-    x1, y1, x2, y2 = limit_zoom(x1, y1, x2, y2, w, h, person_cx)
-    x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
+    raw_x1, raw_y1, raw_x2, raw_y2 = merged_envelope(boxes, hulls)
+    person_cx = (raw_x1 + raw_x2) / 2
+
+    x1, y1, x2, y2 = _run_geometry(raw_x1, raw_y1, raw_x2, raw_y2, w, h, person_cx, margin_ratio)
 
     # Skip if the crop is effectively the full frame (no meaningful difference)
     if (x2 - x1) * (y2 - y1) / (w * h) > 0.96:
@@ -419,9 +417,33 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lo
         "cr3_path": cr3_path,
         "x1": x1, "y1": y1, "x2": x2, "y2": y2,
         "w": w, "h": h,
+        "raw_x1": raw_x1, "raw_y1": raw_y1, "raw_x2": raw_x2, "raw_y2": raw_y2,
+        "person_cx": person_cx,
+        "img": img,
         "orig_bytes": orig_buf.getvalue(),
         "crop_bytes": crop_buf.getvalue(),
     }
+
+
+def _run_geometry(raw_x1, raw_y1, raw_x2, raw_y2, w, h, person_cx, margin_ratio):
+    x1, y1, x2, y2 = expand_with_margin(raw_x1, raw_y1, raw_x2, raw_y2, w, h, margin_ratio)
+    x1, y1, x2, y2 = expand_for_instagram_safe_zone(x1, y1, x2, y2, w, h)
+    x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
+    x1, y1, x2, y2 = limit_zoom(x1, y1, x2, y2, w, h, person_cx)
+    x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w, h)
+    return x1, y1, x2, y2
+
+
+def recompute_crop(d: dict, margin_ratio: float) -> None:
+    """Re-run crop geometry with a new margin, updating d in-place."""
+    x1, y1, x2, y2 = _run_geometry(
+        d["raw_x1"], d["raw_y1"], d["raw_x2"], d["raw_y2"],
+        d["w"], d["h"], d["person_cx"], margin_ratio,
+    )
+    crop_buf = io.BytesIO()
+    d["img"].crop((int(x1), int(y1), int(x2), int(y2))).save(crop_buf, format="JPEG", quality=85)
+    d["x1"], d["y1"], d["x2"], d["y2"] = x1, y1, x2, y2
+    d["crop_bytes"] = crop_buf.getvalue()
 
 
 def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = False):
