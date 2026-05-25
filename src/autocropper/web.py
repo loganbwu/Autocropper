@@ -6,13 +6,14 @@ import queue
 import subprocess
 import threading
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
 from .main import (
     compute_crop,
-    find_cr3_files,
+    get_capture_time,
     has_existing_crop,
     load_models,
     write_xmp,
@@ -152,6 +153,8 @@ class ReviewState:
 def create_app(initial_path: str = "", force: bool = False, all_people: bool = False) -> Flask:
     app = Flask(__name__)
     app.config["review_state"] = None
+    app.config["start_stage"] = None   # str while starting, None otherwise
+    app.config["start_error"] = None   # str if start failed
     app.config["initial_path"] = initial_path
     app.config["force"] = force
     app.config["all_people"] = all_people
@@ -178,21 +181,61 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
         if not path.exists():
             return jsonify({"error": f"Path does not exist: {path}"}), 400
 
-        cr3_files = find_cr3_files(path)
-        if not cr3_files:
-            return jsonify({"error": "No CR3 files found in that folder"}), 400
+        app.config["review_state"] = None
+        app.config["start_error"] = None
+        app.config["start_stage"] = "Scanning folder..."
 
-        _models_ready.wait()  # blocks until models finish loading (usually instant)
+        def _do_start():
+            try:
+                files = [p for p in path.rglob("*") if p.suffix.lower() == ".cr3"]
+                if not files:
+                    app.config["start_error"] = "No CR3 files found in that folder"
+                    return
 
-        app.config["review_state"] = ReviewState(
-            cr3_files, _models,
-            force=app.config["force"],
-            all_people=app.config["all_people"],
-        )
-        return jsonify({"ok": True, "count": len(cr3_files)})
+                n = len(files)
+                app.config["start_stage"] = f"Reading capture times ({n} files)..."
+                workers = min(8, n)
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    times = list(pool.map(get_capture_time, files))
+                empty = sum(1 for t in times if not t)
+                if empty:
+                    print(f"  Warning: {empty}/{n} files had no readable timestamp — check EXIF parsing")
+                sample = [(f.name, t) for f, t in zip(files, times) if t][:3]
+                for name, t in sample:
+                    print(f"  Sample timestamp: {name} → {t}")
+                cr3_files = [
+                    f for _, f in sorted(zip(times, files), key=lambda x: (x[0], str(x[1])))
+                ]
+
+                if not _models_ready.is_set():
+                    app.config["start_stage"] = "Loading AI model..."
+                    _models_ready.wait()
+
+                app.config["start_stage"] = f"Preparing {n} photos..."
+                app.config["review_state"] = ReviewState(
+                    cr3_files, _models,
+                    force=app.config["force"],
+                    all_people=app.config["all_people"],
+                )
+            except Exception as e:
+                app.config["start_error"] = str(e)
+            finally:
+                app.config["start_stage"] = None
+
+        threading.Thread(target=_do_start, daemon=True).start()
+        return jsonify({"ok": True})
 
     @app.route("/api/state")
     def api_state():
+        error = app.config.get("start_error")
+        if error:
+            app.config["start_error"] = None
+            return jsonify({"status": "error", "message": error})
+
+        stage = app.config.get("start_stage")
+        if stage is not None:
+            return jsonify({"status": "starting", "stage": stage})
+
         state = app.config["review_state"]
         if state is None:
             return jsonify({"status": "waiting", "models_ready": _models_ready.is_set()})

@@ -331,19 +331,11 @@
     document.getElementById('picker-sub').textContent = 'Loading...';
     document.getElementById('picker-error').textContent = '';
 
-    const res = await fetch('/api/start', {
+    await fetch('/api/start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({path}),
     });
-    const data = await res.json();
-
-    if (data.error) {
-      document.getElementById('picker-error').textContent = data.error;
-      document.getElementById('picker-sub').textContent = 'Select a folder of CR3 files to review';
-      document.getElementById('btn-pick').disabled = false;
-      return;
-    }
 
     document.getElementById('screen-picker').classList.add('hidden');
     poll();
@@ -366,6 +358,18 @@
       const res = await fetch('/api/state');
       const data = await res.json();
 
+      if (data.status === 'error') {
+        showPicker();
+        document.getElementById('picker-error').textContent = data.message;
+        return;
+      }
+
+      if (data.status === 'starting') {
+        showStarting(data.stage);
+        setTimeout(poll, 600);
+        return;
+      }
+
       if (data.status === 'done') {
         showDone(data);
         return;
@@ -383,6 +387,16 @@
     } catch (e) {
       setTimeout(poll, 1000);
     }
+  }
+
+  function showStarting(stage) {
+    const overlay = document.getElementById('overlay');
+    overlay.classList.remove('hidden');
+    overlay.querySelector('.spinner').style.display = '';
+    document.getElementById('overlay-title').textContent = 'Starting...';
+    document.getElementById('overlay-sub').textContent = stage || '';
+    uiReady = false;
+    deciding = false;
   }
 
   function updateBuffer(buffered) {

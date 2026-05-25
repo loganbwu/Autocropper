@@ -397,12 +397,15 @@ _ORIENTATION_TO_TRANSPOSE = {
 
 
 def _iter_isobmff_boxes(buf, start, end):
+    end = min(end, len(buf))  # don't iterate past the buffer
     off = start
     while off + 8 <= end:
         size = struct.unpack_from('>I', buf, off)[0]
         btype = buf[off + 4:off + 8]
         payload = off + 8
         if size == 1:
+            if off + 16 > len(buf):
+                break
             size = struct.unpack_from('>Q', buf, off + 8)[0]
             payload = off + 16
         if size == 0:
@@ -455,12 +458,12 @@ def _read_tiff_tag(tiff: bytes, tag: int):
     return None
 
 
-def _read_cr3_header(cr3_path: Path, max_bytes: int = 2_000_000) -> bytes:
+def _read_cr3_header(cr3_path: Path, max_bytes: int = 12_000_000) -> bytes:
     """Read only the first max_bytes of a CR3 file.
 
-    The moov/CMT boxes always appear near the start of Canon CR3 files
-    (before the large CRAW image-data box), so 2 MB is sufficient for
-    all EXIF metadata while avoiding loading the full 40–100 MB RAW.
+    The moov/CMT boxes appear near the start of Canon CR3 files before the
+    large CRAW image-data box. 12 MB covers the moov box even for high-res
+    cameras (EOS R3, R5) whose embedded preview images are several MB.
     """
     with open(cr3_path, 'rb') as f:
         return f.read(max_bytes)
