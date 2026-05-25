@@ -21,7 +21,9 @@ from .main import (
     write_xmp,
 )
 
-PREFETCH = 20         # images to pre-process ahead; bounds peak RAM to ~PREFETCH × preview size
+PREFETCH_DEFAULT = 10  # default prefetch buffer; user can override in the UI
+PREFETCH_MIN = 1
+PREFETCH_MAX = 50
 PROCESSING_WORKERS = 4  # parallel exiftool + file-read threads; inference is still serialised
 
 # Models load eagerly in background so they're ready when the user picks a folder
@@ -41,11 +43,12 @@ class ReviewState:
     """Producer/consumer design: producer pre-processes up to PREFETCH images ahead,
     consumer presents them and waits for decisions. The user rarely waits."""
 
-    def __init__(self, files, models, force=False, all_people=False):
+    def __init__(self, files, models, force=False, all_people=False, prefetch=PREFETCH_DEFAULT):
         self.files = files
         self.models = models
         self.force = force
         self.all_people = all_people
+        self.prefetch = prefetch
 
         self.accepted = 0
         self.rejected = 0
@@ -61,7 +64,7 @@ class ReviewState:
 
         # Only processed results enter the queue (skips handled inline by producer).
         # maxsize bounds memory: each slot ≈ one preview JPEG pair (~1–4 MB).
-        self._prefetch_q = queue.Queue(maxsize=PREFETCH)
+        self._prefetch_q = queue.Queue(maxsize=prefetch)
         self._decision_q = queue.Queue()
         self._lock = threading.Lock()
         self._inference_lock = threading.Lock()  # serialises GPU/MPS model calls across worker threads
@@ -175,6 +178,7 @@ class ReviewState:
                     "idx": done_count,
                     "total": self.total_eligible,
                     "buffered": buffered,
+                    "prefetch": self.prefetch,
                 }
             d = self.current
             return {
@@ -183,6 +187,7 @@ class ReviewState:
                 "idx": done_count + 1,
                 "total": self.total_eligible,
                 "buffered": buffered,
+                "prefetch": self.prefetch,
                 "orig_b64": base64.b64encode(d["orig_bytes"]).decode(),
                 "crop_b64": base64.b64encode(d["crop_bytes"]).decode(),
             }
@@ -199,7 +204,8 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
 
     @app.route("/")
     def index():
-        return render_template("index.html", initial_path=app.config["initial_path"], prefetch=PREFETCH)
+        return render_template("index.html", initial_path=app.config["initial_path"],
+                               prefetch_default=PREFETCH_DEFAULT, prefetch_min=PREFETCH_MIN, prefetch_max=PREFETCH_MAX)
 
     @app.route("/api/pick-folder")
     def api_pick_folder():
@@ -219,9 +225,13 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
         if not path.exists():
             return jsonify({"error": f"Path does not exist: {path}"}), 400
 
+        prefetch = int(data.get("prefetch", PREFETCH_DEFAULT))
+        prefetch = max(PREFETCH_MIN, min(PREFETCH_MAX, prefetch))
+
         app.config["review_state"] = None
         app.config["start_error"] = None
         app.config["start_stage"] = "Scanning folder..."
+        app.config["prefetch"] = prefetch
 
         def _do_start():
             try:
@@ -261,12 +271,14 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                     _models_ready.wait()
 
                 eligible = sum(1 for f in cr3_files if app.config["force"] or not has_existing_crop(f))
-                print(f"  Starting review session: {eligible} photos to review")
+                prefetch = app.config["prefetch"]
+                print(f"  Starting review session: {eligible} photos to review, prefetch={prefetch}")
                 app.config["start_stage"] = f"Preparing {n} photos..."
                 app.config["review_state"] = ReviewState(
                     cr3_files, _models,
                     force=app.config["force"],
                     all_people=app.config["all_people"],
+                    prefetch=prefetch,
                 )
             except Exception as e:
                 app.config["start_error"] = str(e)

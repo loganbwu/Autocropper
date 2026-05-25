@@ -75,6 +75,28 @@
       min-height: 18px;
     }
 
+    #prefetch-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--grey);
+    }
+
+    #input-prefetch {
+      width: 56px;
+      background: transparent;
+      border: 1px solid #555;
+      border-radius: 3px;
+      color: var(--white);
+      font-family: Helvetica, sans-serif;
+      font-size: 13px;
+      padding: 4px 8px;
+      text-align: center;
+    }
+
+    #input-prefetch:focus { outline: none; border-color: var(--pale-blue); }
+
     /* ── Review header ── */
 
     #header {
@@ -269,6 +291,12 @@
 <div id="screen-picker">
   <div id="picker-title">Autocropper</div>
   <div id="picker-sub">Select a folder of CR3 files to review</div>
+  <div id="prefetch-row">
+    <label for="input-prefetch">Buffer size</label>
+    <input id="input-prefetch" type="number"
+           min="{{ prefetch_min }}" max="{{ prefetch_max }}" value="{{ prefetch_default }}">
+    <span>images</span>
+  </div>
   <button id="btn-pick" onclick="pickFolder()">Select Folder</button>
   <div id="picker-error"></div>
 </div>
@@ -276,9 +304,7 @@
 <!-- Review UI -->
 <div id="header">
   <div id="filename"></div>
-  <div id="buffer-indicator">
-    {% for _ in range(prefetch) %}<div class="buf-dot"></div>{% endfor %}
-  </div>
+  <div id="buffer-indicator"></div>
   <div id="progress"></div>
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
@@ -304,9 +330,11 @@
 
 <script>
   const INITIAL_PATH = {{ initial_path | tojson }};
+  const PREFETCH_DEFAULT = {{ prefetch_default }};
 
   let uiReady = false;
   let deciding = false;
+  let currentPrefetch = PREFETCH_DEFAULT;
 
   // ── Folder picker ──────────────────────────────────────────
 
@@ -331,10 +359,12 @@
     document.getElementById('picker-sub').textContent = 'Loading...';
     document.getElementById('picker-error').textContent = '';
 
+    const prefetch = parseInt(document.getElementById('input-prefetch').value) || PREFETCH_DEFAULT;
+
     await fetch('/api/start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({path}),
+      body: JSON.stringify({path, prefetch}),
     });
 
     document.getElementById('screen-picker').classList.add('hidden');
@@ -399,7 +429,17 @@
     deciding = false;
   }
 
-  function updateBuffer(buffered) {
+  function updateBuffer(buffered, total) {
+    if (total !== undefined && total !== currentPrefetch) {
+      currentPrefetch = total;
+      const indicator = document.getElementById('buffer-indicator');
+      indicator.innerHTML = '';
+      for (let i = 0; i < total; i++) {
+        const dot = document.createElement('div');
+        dot.className = 'buf-dot';
+        indicator.appendChild(dot);
+      }
+    }
     document.querySelectorAll('.buf-dot').forEach((dot, i) => {
       dot.classList.toggle('ready', i < buffered);
     });
@@ -414,7 +454,7 @@
       : 'Analysing images';
     document.getElementById('overlay-sub').textContent = sub;
     overlay.querySelector('.spinner').style.display = '';
-    updateBuffer(data.buffered || 0);
+    updateBuffer(data.buffered || 0, data.prefetch);
     uiReady = false;
     deciding = false;
   }
@@ -429,7 +469,7 @@
     document.getElementById('progress-bar').style.width = pct + '%';
     document.getElementById('panel-orig').classList.remove('selected');
     document.getElementById('panel-crop').classList.remove('selected');
-    updateBuffer(data.buffered || 0);
+    updateBuffer(data.buffered || 0, data.prefetch);
     uiReady = true;
     deciding = false;
   }
