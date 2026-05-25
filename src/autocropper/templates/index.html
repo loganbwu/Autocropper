@@ -113,11 +113,31 @@
     #filename { font-weight: 600; color: var(--white); }
     #progress { color: var(--grey); }
 
+    #buffer-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
     #buffer-indicator {
       display: flex;
       align-items: center;
       gap: 3px;
     }
+
+    #review-prefetch {
+      width: 46px;
+      background: transparent;
+      border: 1px solid #444;
+      border-radius: 3px;
+      color: var(--paragraph-text-color);
+      font-family: Helvetica, sans-serif;
+      font-size: 12px;
+      padding: 2px 6px;
+      text-align: center;
+    }
+
+    #review-prefetch:focus { outline: none; border-color: var(--pale-blue); color: var(--white); }
 
     .buf-dot {
       width: 6px;
@@ -304,19 +324,21 @@
 <!-- Review UI -->
 <div id="header">
   <div id="filename"></div>
-  <div id="buffer-indicator"></div>
+  <div id="buffer-control">
+    <div id="buffer-indicator"></div>
+    <input id="review-prefetch" type="number" min="{{ prefetch_min }}" max="{{ prefetch_max }}"
+           value="{{ prefetch_default }}" title="Buffer size" oninput="setPrefetch(this.value)">
+  </div>
   <div id="progress"></div>
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
 
 <div id="panels">
   <div class="panel" id="panel-orig" onclick="decide('skip')">
-    <div class="panel-label">Original</div>
     <img id="img-orig" src="" alt="">
     <div class="key-hint"><span class="key-badge">1</span> Keep original</div>
   </div>
   <div class="panel" id="panel-crop" onclick="decide('crop')">
-    <div class="panel-label">AI Crop</div>
     <img id="img-crop" src="" alt="">
     <div class="key-hint"><span class="key-badge">2</span> Apply crop</div>
   </div>
@@ -439,10 +461,27 @@
         dot.className = 'buf-dot';
         indicator.appendChild(dot);
       }
+      // Keep header input in sync with server-reported prefetch
+      const inp = document.getElementById('review-prefetch');
+      if (inp && inp !== document.activeElement) inp.value = total;
     }
     document.querySelectorAll('.buf-dot').forEach((dot, i) => {
       dot.classList.toggle('ready', i < buffered);
     });
+  }
+
+  let _prefetchTimer = null;
+  function setPrefetch(val) {
+    clearTimeout(_prefetchTimer);
+    _prefetchTimer = setTimeout(async () => {
+      const n = parseInt(val);
+      if (!n || n < 1) return;
+      await fetch('/api/set-prefetch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({prefetch: n}),
+      });
+    }, 400);  // debounce: wait for user to stop typing
   }
 
   function showLoading(data) {

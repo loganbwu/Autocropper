@@ -65,8 +65,10 @@ class ReviewState:
         )
 
         # Only processed results enter the queue (skips handled inline by producer).
-        # maxsize bounds memory: each slot ≈ one preview JPEG pair (~1–4 MB).
-        self._prefetch_q = queue.Queue(maxsize=prefetch)
+        # Unbounded queue; backpressure is handled via _prefetch_cv so the limit
+        # can be changed live without recreating the queue.
+        self._prefetch_q = queue.Queue()
+        self._prefetch_cv = threading.Condition(threading.Lock())
         self._decision_q = queue.Queue()
         self._lock = threading.Lock()
         self._inference_lock = threading.Lock()  # serialises GPU/MPS model calls across worker threads
@@ -124,13 +126,25 @@ class ReviewState:
                         continue
 
                     print(f"  Ready:     {cr3.name}")
-                    self._prefetch_q.put(result)  # blocks if queue is full (backpressure)
+                    with self._prefetch_cv:
+                        while self._prefetch_q.qsize() >= self.prefetch:
+                            self._prefetch_cv.wait()
+                    self._prefetch_q.put(result)
         finally:
             self._prefetch_q.put(None)  # sentinel always sent, even after an unexpected error
+
+    def set_prefetch(self, n):
+        with self._lock:
+            self.prefetch = n
+        with self._prefetch_cv:
+            self._prefetch_cv.notify_all()  # wake producer if it was waiting under old limit
+        print(f"  Prefetch buffer resized to {n}")
 
     def _consumer(self):
         while True:
             result = self._prefetch_q.get()
+            with self._prefetch_cv:
+                self._prefetch_cv.notify()  # one slot freed; let producer continue
 
             if result is None:
                 with self._lock:
@@ -319,6 +333,17 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
             return jsonify({"error": "invalid choice"}), 400
         state.decide(choice)
         return jsonify({"ok": True})
+
+    @app.route("/api/set-prefetch", methods=["POST"])
+    def api_set_prefetch():
+        state = app.config["review_state"]
+        if state is None:
+            return jsonify({"error": "no active session"}), 400
+        n = request.json.get("prefetch")
+        if not isinstance(n, int) or not (PREFETCH_MIN <= n <= PREFETCH_MAX):
+            return jsonify({"error": "invalid value"}), 400
+        state.set_prefetch(n)
+        return jsonify({"ok": True, "prefetch": n})
 
     return app
 
