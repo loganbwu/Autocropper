@@ -18,11 +18,13 @@ from .main import (
     get_capture_time,
     has_been_reviewed,
     has_existing_crop,
+    load_ml_models,
     load_models,
     recompute_crop,
     write_decline_marker,
     write_xmp,
 )
+from .ml_crop import TrainingDataset, predict_ml_crop
 
 PREFETCH_DEFAULT = 10  # default prefetch buffer; user can override in the UI
 PREFETCH_MIN = 1
@@ -33,9 +35,15 @@ MARGIN_DEFAULT = 0.20
 MARGIN_MIN = 0.00
 MARGIN_MAX = 0.50
 
-# Models load eagerly in background so they're ready when the user picks a folder
+# Standard models load eagerly in background
 _models = None
 _models_ready = threading.Event()
+
+# ML models (SAM2 + ViTPose) load lazily when first needed
+_ml_models = None
+_ml_models_ready = threading.Event()
+_ml_models_loading = False
+_ml_models_lock = threading.Lock()
 
 
 def _load_models_thread():
@@ -44,6 +52,24 @@ def _load_models_thread():
     _models = load_models()
     print("AI model ready.")
     _models_ready.set()
+
+
+def _ensure_ml_models_loaded():
+    """Trigger ML model loading if not already started; returns immediately."""
+    global _ml_models, _ml_models_loading
+    with _ml_models_lock:
+        if _ml_models_ready.is_set() or _ml_models_loading:
+            return
+        _ml_models_loading = True
+
+    def _load():
+        global _ml_models
+        print("Loading ML models (SAM2 + ViTPose) in background...")
+        _ml_models = load_ml_models()
+        print("ML models ready.")
+        _ml_models_ready.set()
+
+    threading.Thread(target=_load, daemon=True).start()
 
 
 class ReviewState:
@@ -64,6 +90,10 @@ class ReviewState:
         self.status = "loading"
         self.current = None
 
+        # ML mode state
+        self.ml_mode = False
+        self.ml_dataset = None   # TrainingDataset | None
+
         self.total_eligible = len(files)
 
         # Only processed results enter the queue (skips handled inline by producer).
@@ -80,8 +110,14 @@ class ReviewState:
 
     def _producer(self):
         def _process(cr3):
+            with self._lock:
+                use_ml = self.ml_mode and self.ml_dataset is not None and _ml_models_ready.is_set()
+                margin = self.margin
+            if use_ml:
+                return predict_ml_crop(cr3, self.ml_dataset, _ml_models,
+                                       _inference_lock=self._inference_lock)
             return compute_crop(self.models, cr3, self.all_people,
-                                _inference_lock=self._inference_lock, margin_ratio=self.margin)
+                                _inference_lock=self._inference_lock, margin_ratio=margin)
 
         try:
             # Sliding-window thread pool: PROCESSING_WORKERS threads run file I/O in
@@ -151,7 +187,8 @@ class ReviewState:
                 return
 
             with self._lock:
-                recompute_crop(result, self.margin)
+                if not result.get("ml_crop"):
+                    recompute_crop(result, self.margin)
                 self.current = result
                 self.status = "ready"
 
@@ -208,6 +245,10 @@ class ReviewState:
                 "prefetch": self.prefetch,
                 "orig_b64": base64.b64encode(d["orig_bytes"]).decode(),
                 "crop_b64": base64.b64encode(d["crop_bytes"]).decode(),
+                "ml_crop": bool(d.get("ml_crop")),
+                "ml_mode": self.ml_mode,
+                "ml_dataset_loaded": self.ml_dataset is not None,
+                "ml_models_ready": _ml_models_ready.is_set(),
             }
 
 
@@ -220,6 +261,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
     app.config["initial_path"] = initial_path
     app.config["force"] = force
     app.config["all_people"] = all_people
+    app.config["ml_dataset"] = None      # TrainingDataset | None, persists across sessions
 
     @app.route("/")
     def index():
@@ -339,7 +381,12 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
 
         state = app.config["review_state"]
         if state is None:
-            return jsonify({"status": "waiting", "models_ready": _models_ready.is_set()})
+            return jsonify({
+                "status": "waiting",
+                "models_ready": _models_ready.is_set(),
+                "ml_models_ready": _ml_models_ready.is_set(),
+                "ml_dataset_loaded": False,
+            })
         return jsonify(state.get_state())
 
     @app.route("/api/decide", methods=["POST"])
@@ -367,9 +414,56 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
             d = state.current
             if d is None:
                 return jsonify({"ok": True})
-            recompute_crop(d, margin)
-            crop_b64 = base64.b64encode(d["crop_bytes"]).decode()
+            if d.get("ml_crop"):
+                # Margin has no effect in ML mode — return current crop unchanged
+                crop_b64 = base64.b64encode(d["crop_bytes"]).decode()
+            else:
+                recompute_crop(d, margin)
+                crop_b64 = base64.b64encode(d["crop_bytes"]).decode()
         return jsonify({"ok": True, "crop_b64": crop_b64})
+
+    @app.route("/api/ml-dataset", methods=["POST"])
+    def api_ml_dataset():
+        if "file" not in request.files:
+            return jsonify({"error": "no file uploaded"}), 400
+        f = request.files["file"]
+        try:
+            dataset = TrainingDataset.load(f.stream)
+        except Exception as e:
+            return jsonify({"error": f"could not load dataset: {e}"}), 400
+
+        _ensure_ml_models_loaded()
+
+        state = app.config["review_state"]
+        if state is not None:
+            with state._lock:
+                state.ml_dataset = dataset
+        app.config["ml_dataset"] = dataset
+        return jsonify({
+            "ok": True,
+            "records": len(dataset.records),
+            "alpha": dataset.alpha,
+            "ml_models_ready": _ml_models_ready.is_set(),
+        })
+
+    @app.route("/api/ml-mode", methods=["POST"])
+    def api_ml_mode():
+        data = request.json or {}
+        enabled = bool(data.get("enabled", False))
+
+        state = app.config["review_state"]
+        dataset = app.config.get("ml_dataset")
+
+        if enabled and dataset is None:
+            return jsonify({"error": "upload a training dataset first"}), 400
+        if enabled and not _ml_models_ready.is_set():
+            return jsonify({"error": "ML models are still loading, please wait"}), 400
+
+        if state is not None:
+            with state._lock:
+                state.ml_mode = enabled
+                state.ml_dataset = dataset if enabled else None
+        return jsonify({"ok": True, "ml_mode": enabled})
 
     @app.route("/api/set-prefetch", methods=["POST"])
     def api_set_prefetch():

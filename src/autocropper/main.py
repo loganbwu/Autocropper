@@ -66,6 +66,38 @@ def load_models():
     return gdino_processor, gdino_model
 
 
+def load_ml_models():
+    """Load all models needed for ML crop mode: Grounding DINO + SAM2 + ViTPose."""
+    from transformers import AutoProcessor, AutoModelForMaskGeneration, AutoModel
+
+    gdino_processor, gdino_model = load_models()
+
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+
+    SAM2_MODEL = "facebook/sam2-hiera-tiny"
+    VITPOSE_MODEL = "usyd-community/vitpose-base-simple"
+
+    kwargs = {"local_files_only": True}
+    try:
+        sam_processor = AutoProcessor.from_pretrained(SAM2_MODEL, **kwargs)
+        sam_model = AutoModelForMaskGeneration.from_pretrained(SAM2_MODEL, **kwargs).to(device).eval()
+        vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL, **kwargs)
+        vitpose_model = AutoModel.from_pretrained(VITPOSE_MODEL, **kwargs).to(device).eval()
+    except Exception:
+        sam_processor = AutoProcessor.from_pretrained(SAM2_MODEL)
+        sam_model = AutoModelForMaskGeneration.from_pretrained(SAM2_MODEL).to(device).eval()
+        vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL)
+        vitpose_model = AutoModel.from_pretrained(VITPOSE_MODEL).to(device).eval()
+
+    print("ML models (SAM2 + ViTPose) loaded.")
+    return gdino_processor, gdino_model, sam_processor, sam_model, vitpose_processor, vitpose_model
+
+
 def detect_people_with_masks(models, image: Image.Image):
     gdino_processor, gdino_model = models
     device = next(gdino_model.parameters()).device
@@ -320,6 +352,47 @@ def _display_to_sensor_crop(left, top, right, bottom, orientation):
     elif orientation == 3:  # 180°
         return 1-right, 1-bottom, 1-left, 1-top
     return left, top, right, bottom
+
+
+def _sensor_to_display_crop(left, top, right, bottom, orientation):
+    """Inverse of _display_to_sensor_crop: sensor space → display space."""
+    if orientation == 6:    # 90° CW
+        return 1-bottom, left, 1-top, right
+    elif orientation == 8:  # 90° CCW
+        return top, 1-right, bottom, 1-left
+    elif orientation == 3:  # 180°
+        return 1-right, 1-bottom, 1-left, 1-top
+    return left, top, right, bottom
+
+
+def read_xmp_crop(cr3_path: Path):
+    """Return existing XMP crop as (x1, y1, x2, y2) in display pixels, or None."""
+    xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
+    if not xmp_path.exists():
+        return None
+    try:
+        content = xmp_path.read_text()
+    except Exception:
+        return None
+
+    if not re.search(r'crs:HasCrop[=>"\s]*(True|true|1)', content):
+        return None
+
+    def _extract(tag):
+        m = re.search(rf'crs:{tag}[>="]*\s*([0-9.]+)', content)
+        return float(m.group(1)) if m else None
+
+    vals = [_extract(t) for t in ('CropLeft', 'CropTop', 'CropRight', 'CropBottom')]
+    if any(v is None for v in vals):
+        return None
+
+    left, top, right, bottom = vals
+    orientation = get_orientation(cr3_path)
+    left, top, right, bottom = _sensor_to_display_crop(left, top, right, bottom, orientation)
+
+    img = apply_orientation(extract_preview_image(cr3_path), orientation)
+    w, h = img.size
+    return left * w, top * h, right * w, bottom * h
 
 
 def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):

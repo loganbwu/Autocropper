@@ -126,6 +126,84 @@
       color: var(--grey);
     }
 
+    #margin-control.ml-active {
+      opacity: 0.35;
+      pointer-events: none;
+    }
+
+    #ml-control {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--grey);
+    }
+
+    #ml-label { cursor: pointer; user-select: none; }
+
+    #ml-toggle {
+      width: 32px;
+      height: 17px;
+      border-radius: 9px;
+      background: #444;
+      position: relative;
+      cursor: pointer;
+      border: none;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+
+    #ml-toggle::after {
+      content: '';
+      position: absolute;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: #bbb;
+      top: 2px;
+      left: 2px;
+      transition: left 0.2s, background 0.2s;
+    }
+
+    #ml-toggle.on { background: var(--pale-blue); }
+    #ml-toggle.on::after { left: 17px; background: var(--white); }
+
+    #ml-toggle:disabled { opacity: 0.35; cursor: default; }
+
+    #ml-file-label {
+      font-size: 11px;
+      padding: 2px 7px;
+      border: 1px solid #444;
+      border-radius: 3px;
+      cursor: pointer;
+      color: var(--grey);
+      white-space: nowrap;
+    }
+
+    #ml-file-label:hover { border-color: var(--pale-blue); color: var(--pale-blue); }
+
+    #ml-file { display: none; }
+
+    #ml-status {
+      font-size: 11px;
+      color: var(--grey);
+      white-space: nowrap;
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #ml-badge {
+      display: none;
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: var(--pale-blue);
+      color: var(--black);
+      font-weight: bold;
+      letter-spacing: 0.04em;
+    }
+
     .buf-dot {
       width: 6px;
       height: 6px;
@@ -331,6 +409,14 @@
            value="{{ margin_default }}" title="Crop margin %" oninput="setMargin(this.value)">
     %
   </div>
+  <div id="ml-control">
+    <label id="ml-file-label" for="ml-file" title="Upload training dataset (.pkl)">dataset</label>
+    <input id="ml-file" type="file" accept=".pkl" onchange="uploadDataset(this)">
+    <span id="ml-status"></span>
+    <button id="ml-toggle" title="Enable ML crop mode" onclick="toggleMlMode()" disabled></button>
+    <label id="ml-label" for="ml-toggle" onclick="toggleMlMode()">ML</label>
+  </div>
+  <span id="ml-badge">ML</span>
   <div id="progress"></div>
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
@@ -552,8 +638,93 @@
     document.getElementById('panel-orig').classList.remove('selected');
     document.getElementById('panel-crop').classList.remove('selected');
     updateBuffer(data.buffered || 0, data.prefetch);
+    // Show ML badge on crop panel when result came from ML mode
+    document.getElementById('ml-badge').style.display = data.ml_crop ? '' : 'none';
+    // Sync toggle state with server
+    syncMlUi(data);
     uiReady = true;
     deciding = false;
+  }
+
+  // ── ML crop controls ────────────────────────────────────────
+
+  let _mlMode = false;
+  let _mlDatasetLoaded = false;
+  let _mlModelsReady = false;
+
+  function syncMlUi(data) {
+    _mlMode = !!data.ml_mode;
+    _mlDatasetLoaded = !!data.ml_dataset_loaded;
+    _mlModelsReady = !!data.ml_models_ready;
+
+    const toggle = document.getElementById('ml-toggle');
+    const marginCtrl = document.getElementById('margin-control');
+
+    toggle.disabled = !(_mlDatasetLoaded && _mlModelsReady);
+    toggle.classList.toggle('on', _mlMode);
+    marginCtrl.classList.toggle('ml-active', _mlMode);
+
+    if (_mlDatasetLoaded && !_mlModelsReady) {
+      document.getElementById('ml-status').textContent = 'loading models...';
+    } else if (!_mlDatasetLoaded) {
+      document.getElementById('ml-status').textContent = '';
+    }
+  }
+
+  async function uploadDataset(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const status = document.getElementById('ml-status');
+    status.textContent = 'uploading...';
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const res = await fetch('/api/ml-dataset', { method: 'POST', body: form });
+      const data = await res.json();
+      if (data.error) {
+        status.textContent = data.error;
+      } else {
+        status.textContent = `${data.records} records`;
+        _mlDatasetLoaded = true;
+        _mlModelsReady = data.ml_models_ready || false;
+        const toggle = document.getElementById('ml-toggle');
+        toggle.disabled = !_mlModelsReady;
+        if (!_mlModelsReady) {
+          status.textContent = `${data.records} records — loading models...`;
+          // Poll until ML models ready
+          const pollModels = setInterval(async () => {
+            const r = await fetch('/api/state');
+            const d = await r.json();
+            if (d.ml_models_ready) {
+              clearInterval(pollModels);
+              status.textContent = `${data.records} records`;
+              toggle.disabled = false;
+            }
+          }, 2000);
+        }
+      }
+    } catch (e) {
+      status.textContent = 'upload failed';
+    }
+    input.value = '';
+  }
+
+  async function toggleMlMode() {
+    if (!_mlDatasetLoaded || !_mlModelsReady) return;
+    const newMode = !_mlMode;
+    try {
+      const res = await fetch('/api/ml-mode', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: newMode}),
+      });
+      const data = await res.json();
+      if (!data.error) {
+        _mlMode = newMode;
+        document.getElementById('ml-toggle').classList.toggle('on', _mlMode);
+        document.getElementById('margin-control').classList.toggle('ml-active', _mlMode);
+      }
+    } catch (e) { /* ignore */ }
   }
 
   function showDone(data) {

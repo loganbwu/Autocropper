@@ -21,6 +21,8 @@ requires-python = ">= 3.8"
 [project.scripts]
 autocrop = "autocropper.main:main"
 autocrop-web = "autocropper.web:web_main"
+build-training-dataset = "autocropper.build_training_dataset:main"
+optimize-weights = "autocropper.optimize_weights:main"
 
 [build-system]
 requires = ["hatchling"]
