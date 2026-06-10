@@ -44,6 +44,8 @@ huggingface-hub==1.7.1
 idna==3.11
     # via anyio
     # via httpx
+iniconfig==2.3.0
+    # via pytest
 itsdangerous==2.2.0
     # via flask
 jinja2==3.1.6
@@ -68,12 +70,17 @@ numpy==2.3.5
     # via transformers
 packaging==25.0
     # via huggingface-hub
+    # via pytest
     # via transformers
 pillow==12.0.0
     # via autocropper
     # via torchvision
+pluggy==1.6.0
+    # via pytest
 pygments==2.19.2
+    # via pytest
     # via rich
+pytest==9.0.3
 pyyaml==6.0.3
     # via huggingface-hub
     # via transformers

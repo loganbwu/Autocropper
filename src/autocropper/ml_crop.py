@@ -94,9 +94,9 @@ def _mask_bbox(mask):
     cols = np.any(mask, axis=0)
     if not rows.any():
         return None
-    y1, y2 = int(np.where(rows)[0][[0, -1]])
-    x1, x2 = int(np.where(cols)[0][[0, -1]])
-    return x1, y1, x2, y2
+    y_idx = np.where(rows)[0]
+    x_idx = np.where(cols)[0]
+    return int(x_idx[0]), int(y_idx[0]), int(x_idx[-1]), int(y_idx[-1])
 
 
 # ---- Feature extraction ----
