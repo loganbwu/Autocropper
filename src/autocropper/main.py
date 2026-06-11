@@ -68,7 +68,8 @@ def load_models():
 
 def load_ml_models():
     """Load all models needed for ML crop mode: Grounding DINO + SAM + ViTPose."""
-    from transformers import SamProcessor, SamModel, AutoProcessor, VitPoseForPoseEstimation
+    from transformers.models.sam import SamProcessor, SamModel
+    from transformers import AutoProcessor, VitPoseForPoseEstimation
 
     gdino_processor, gdino_model = load_models()
 
