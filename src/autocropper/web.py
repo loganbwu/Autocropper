@@ -7,10 +7,20 @@ import itertools
 import json
 import queue
 import subprocess
+import sys
 import threading
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+# ANSI colour helpers — disabled automatically when output is not a terminal.
+_C      = sys.stdout.isatty()
+_GREEN  = "\033[32m" if _C else ""
+_YELLOW = "\033[33m" if _C else ""
+_RED    = "\033[31m" if _C else ""
+_CYAN   = "\033[36m" if _C else ""
+_DIM    = "\033[2m"  if _C else ""
+_RESET  = "\033[0m"  if _C else ""
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
@@ -60,7 +70,7 @@ def _load_models_thread():
     global _models
     print("Loading AI model in background...")
     _models = load_models()
-    print("AI model ready.")
+    print(f"{_GREEN}AI model ready.{_RESET}")
     _models_ready.set()
 
 
@@ -79,11 +89,11 @@ def _ensure_ml_models_loaded():
         try:
             _models_ready.wait()  # ensure base GDINO is loaded before we borrow it
             _ml_models = load_ml_models(gdino_models=_models)
-            print("ML models ready.")
+            print(f"{_GREEN}ML models ready.{_RESET}")
             _ml_models_ready.set()
             _notify_sse()
         except Exception as e:
-            print(f"ERROR: failed to load ML models: {e}")
+            print(f"{_RED}ERROR: failed to load ML models: {e}{_RESET}")
             import traceback; traceback.print_exc()
             with _ml_models_lock:
                 _ml_models_error = str(e)
@@ -148,7 +158,7 @@ class ReviewState:
                     # ML couldn't produce a crop (no person, no face, too few neighbours,
                     # or model failure) — fall back to classic margin crop.
                     # The classic result has no ml_crop key so the buffer dot stays blue.
-                    print(f"  ML: no crop for {cr3.name}, falling back to classic crop")
+                    print(f"{_YELLOW}  ML: no crop for {cr3.name}, falling back to classic crop{_RESET}")
                     return compute_crop(self.models, cr3, self.all_people,
                                         _inference_lock=self._inference_lock, margin_ratio=margin)
                 return result
@@ -179,7 +189,7 @@ class ReviewState:
                     try:
                         result = future.result()
                     except Exception as e:
-                        print(f"  Warning: skipping {cr3.name} — {e}")
+                        print(f"{_RED}  Warning: skipping {cr3.name} — {e}{_RESET}")
                         with self._lock:
                             self.skipped += 1
                             self.no_person_skipped += 1
@@ -202,13 +212,13 @@ class ReviewState:
                     _notify_sse()
 
                     if result is None:
-                        print(f"  No person: {cr3.name}")
+                        print(f"{_YELLOW}  No person: {cr3.name}{_RESET}")
                         continue
                     if result is False:
-                        print(f"  No-op crop: {cr3.name}")
+                        print(f"{_YELLOW}  No-op crop: {cr3.name}{_RESET}")
                         continue
 
-                    print(f"  Ready:     {cr3.name}")
+                    print(f"{_GREEN}  Ready:     {cr3.name}{_RESET}")
                     with self._prefetch_cv:
                         while self._prefetch_q.qsize() >= self.prefetch:
                             self._prefetch_cv.wait()
@@ -235,7 +245,7 @@ class ReviewState:
                 with self._lock:
                     self.status = "done"
                 _notify_sse()
-                print(f"Session complete — cropped: {self.accepted}, skipped: {self.rejected}, no person/already done: {self.skipped}")
+                print(f"{_GREEN}Session complete — cropped: {self.accepted}, skipped: {self.rejected}, no person/already done: {self.skipped}{_RESET}")
                 return
 
             with self._lock:
@@ -258,13 +268,13 @@ class ReviewState:
                     write_xmp(d["cr3_path"], d["x1"], d["y1"], d["x2"], d["y2"], d["w"], d["h"])
                     self.accepted += 1
                     self._decided_paths.add(d["cr3_path"])
-                    print(f"  Cropped:   {d['cr3_path'].name}")
+                    print(f"{_GREEN}  Cropped:   {d['cr3_path'].name}{_RESET}")
                 else:
                     d = self.current
                     write_decline_marker(d["cr3_path"])
                     self.rejected += 1
                     self._decided_paths.add(d["cr3_path"])
-                    print(f"  Declined:  {d['cr3_path'].name}")
+                    print(f"{_DIM}  Declined:  {d['cr3_path'].name}{_RESET}")
                 self.current = None
                 self.status = "loading"
             _notify_sse()
@@ -384,7 +394,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 files = [p for p in path.rglob("*") if p.suffix.lower() == ".cr3"]
                 if not files:
                     app.config["start_error"] = "No CR3 files found in that folder"
-                    print("  No CR3 files found.")
+                    print(f"{_RED}  No CR3 files found.{_RESET}")
                     _notify_sse()
                     return
 
@@ -432,7 +442,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 )
             except Exception as e:
                 app.config["start_error"] = str(e)
-                print(f"  Error during startup: {e}")
+                print(f"{_RED}  Error during startup: {e}{_RESET}")
             finally:
                 app.config["start_stage"] = None
                 _notify_sse()
@@ -684,7 +694,7 @@ def web_main():
         candidates = sorted(Path("data").glob("*.pkl")) if Path("data").is_dir() else []
         if candidates:
             ml_dataset_path = str(candidates[0])
-            print(f"Auto-detected ML dataset: {ml_dataset_path}")
+            print(f"{_CYAN}Auto-detected ML dataset: {ml_dataset_path}{_RESET}")
 
     threading.Thread(target=_load_models_thread, daemon=True).start()
 
@@ -692,7 +702,7 @@ def web_main():
                      ml_dataset_path=ml_dataset_path)
 
     url = f"http://localhost:{args.port}"
-    print(f"Starting review UI at {url} (use --port to change)")
+    print(f"{_GREEN}Starting review UI at {url}{_RESET} (use --port to change)")
     webbrowser.open(url)
 
     app.run(host="0.0.0.0", port=args.port, debug=False, use_reloader=False)

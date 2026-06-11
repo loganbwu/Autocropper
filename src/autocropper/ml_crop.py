@@ -8,9 +8,19 @@ Workflow:
 
 import io
 import pickle
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# ANSI colour helpers — disabled automatically when output is not a terminal.
+_C      = sys.stdout.isatty()
+_GREEN  = "\033[32m" if _C else ""
+_YELLOW = "\033[33m" if _C else ""
+_RED    = "\033[31m" if _C else ""
+_CYAN   = "\033[36m" if _C else ""
+_DIM    = "\033[2m"  if _C else ""
+_RESET  = "\033[0m"  if _C else ""
 
 import numpy as np
 import torch
@@ -169,48 +179,48 @@ def extract_features(image, models, name=None):
     boxes, _, w, h = detect_people_with_masks((gdino_processor, gdino_model), image)
     t1 = time.perf_counter()
     if len(boxes) == 0:
-        print(f"  GDINO (person detection){label}: no people detected")
+        print(f"{_YELLOW}  GDINO (person detection){label}: no people detected{_RESET}")
         return None
     if len(boxes) > 1:
         areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in boxes]
         idx = int(np.argmax(areas))
         bbox = boxes[idx]
-        print(f"  GDINO (person detection){label}: found {len(boxes)} people, using largest (box {idx + 1})")
+        print(f"{_CYAN}  GDINO (person detection){label}: found {len(boxes)} people, using largest (box {idx + 1}){_RESET}")
     else:
         bbox = boxes[0]
 
     try:
         full_mask = _run_sam(image, bbox, sam_processor, sam_model, device)
     except Exception as e:
-        print(f"  SAM (person segmentation){label} failed: {e}")
+        print(f"{_RED}  SAM (person segmentation){label} failed: {e}{_RESET}")
         return None
     t2 = time.perf_counter()
     bbox_mask = _mask_bbox(full_mask)
     if bbox_mask is None:
-        print(f"  SAM (person segmentation){label}: returned an empty mask")
+        print(f"{_YELLOW}  SAM (person segmentation){label}: returned an empty mask{_RESET}")
         return None
     mx1, my1, mx2, my2 = bbox_mask
     mask_w = mx2 - mx1
     mask_h = my2 - my1
     if mask_w <= 0 or mask_h <= 0:
-        print(f"  SAM (person segmentation){label}: degenerate mask bbox ({mask_w}×{mask_h})")
+        print(f"{_YELLOW}  SAM (person segmentation){label}: degenerate mask bbox ({mask_w}×{mask_h}){_RESET}")
         return None
 
     try:
         kps, scores = _run_vitpose(image, bbox, vitpose_processor, vitpose_model, device)
     except Exception as e:
-        print(f"  ViTPose (face keypoint detection){label} failed: {e}")
+        print(f"{_RED}  ViTPose (face keypoint detection){label} failed: {e}{_RESET}")
         return None
     t3 = time.perf_counter()
     if kps is None:
-        print(f"  ViTPose (face keypoint detection){label}: no poses returned")
+        print(f"{_YELLOW}  ViTPose (face keypoint detection){label}: no poses returned{_RESET}")
         return None
 
-    print(f"    gdino={t1-t0:.2f}s  sam={t2-t1:.2f}s  vitpose={t3-t2:.2f}s")
+    print(f"{_DIM}    gdino={t1-t0:.2f}s  sam={t2-t1:.2f}s  vitpose={t3-t2:.2f}s{_RESET}")
 
     face_indices = [i for i in FACE_KP_INDICES if scores[i] > FACE_KP_THRESHOLD]
     if not face_indices:
-        print(f"  ViTPose (face keypoint detection){label}: no face keypoints above confidence threshold — needed to centre the crop on the subject")
+        print(f"{_YELLOW}  ViTPose (face keypoint detection){label}: no face keypoints above confidence threshold — needed to centre the crop on the subject{_RESET}")
         return None
 
     face_xy = kps[face_indices]
@@ -307,7 +317,7 @@ def _get_ar_candidates(dataset, query_ar):
             masks_small = np.empty((0, KNN_COMPARE_SIZE, KNN_COMPARE_SIZE), dtype=bool)
             face_centroids = np.empty((0, 2), dtype=np.float32)
         dataset._ar_cache[ar_key] = (candidates, masks_small, face_centroids)
-        print(f"  k-NN cache built for AR≈{ar_key:.2f}: {len(candidates)} candidates, masks_small={masks_small.nbytes // 1024}KB")
+        print(f"{_DIM}  k-NN cache built for AR≈{ar_key:.2f}: {len(candidates)} candidates, masks_small={masks_small.nbytes // 1024}KB{_RESET}")
     return dataset._ar_cache[ar_key]
 
 
@@ -351,7 +361,7 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
 
     candidates, masks_small, face_centroids_arr = _get_ar_candidates(dataset, query_ar)
     if len(candidates) < n:
-        print(f"  ML [{cr3_path.name}]: only {len(candidates)} training records match this aspect ratio (need {n})")
+        print(f"{_YELLOW}  ML [{cr3_path.name}]: only {len(candidates)} training records match this aspect ratio (need {n}){_RESET}")
         return None
 
     # Vectorised distance computation — no Python loop over training records.
@@ -369,7 +379,7 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
     neighbors = [candidates[i] for i in top_idx]
     t_knn = time.perf_counter()
 
-    print(f"  ML timing [{cr3_path.name}]: io={t_io-t_start:.2f}s  inference={t_inf-t_io:.2f}s  knn(n={len(candidates)})={t_knn-t_inf:.2f}s  total={t_knn-t_start:.2f}s")
+    print(f"{_DIM}  ML timing [{cr3_path.name}]: io={t_io-t_start:.2f}s  inference={t_inf-t_io:.2f}s  knn(n={len(candidates)})={t_knn-t_inf:.2f}s  total={t_knn-t_start:.2f}s{_RESET}")
 
     pred_cc_x = float(np.mean([r.crop_center[0] for r in neighbors]))
     pred_cc_y = float(np.mean([r.crop_center[1] for r in neighbors]))
