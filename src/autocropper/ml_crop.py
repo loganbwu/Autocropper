@@ -29,7 +29,7 @@ from PIL import Image
 FACE_KP_INDICES = [0, 1, 2, 3, 4]   # COCO: nose, left_eye, right_eye, left_ear, right_ear
 FACE_KP_THRESHOLD = 0.3
 MASK_SIZE = 1024
-KNN_COMPARE_SIZE = 64                 # masks are downsampled to this resolution for k-NN comparison
+KNN_COMPARE_SIZE = 128                # masks are downsampled to this resolution for k-NN comparison
 AR_EPSILON = 0.05                     # aspect-ratio tolerance for similarity matching
 DEFAULT_N_NEIGHBORS = 10
 MAX_INFERENCE_SIZE = 800              # longest edge fed to models; SAM/GDINO resize internally anyway
