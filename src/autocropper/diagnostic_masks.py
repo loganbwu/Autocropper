@@ -1,14 +1,15 @@
-"""Compare person segmentation across four strategies.
+"""Compare person segmentation across five strategies.
 
 Usage:
-    diagnostic-masks <input_folder> <output_folder> [--n N]
+    diagnostic-masks <input_folder> <output_folder> [--n N] [--yolo-padding P]
 
-Produces a four-panel side-by-side JPEG for each image:
+Produces a five-panel side-by-side JPEG for each image:
 
-  Panel 1 — GDINO bbox → MobileSAM          (current pipeline)
-  Panel 2 — YOLOv8-pose bbox → MobileSAM    (faster detector, same SAM)
-  Panel 3 — YOLOv8-seg mask directly         (no SAM)
-  Panel 4 — GDINO bbox → SAM 2 tiny          (newer SAM, same detector)
+  Panel 1 — GDINO bbox → SAM 2.1            (current pipeline, reference)
+  Panel 2 — YOLOv8-pose tight bbox → SAM 2.1  (baseline YOLO)
+  Panel 3 — YOLOv8-pose + padding → SAM 2.1   (bbox expanded by --yolo-padding %)
+  Panel 4 — YOLOv8-pose + keypoints union → SAM 2.1  (bbox expanded to cover all kps)
+  Panel 5 — YOLOv8-seg mask directly          (no SAM)
 
 Overlay colours:
   Blue   — person mask (subject)
@@ -41,12 +42,11 @@ from .ml_crop import (
     _run_vitpose,
 )
 
-SAM2_MODEL = "facebook/sam2.1-hiera-tiny"
-
-_CR3_SUFFIXES = {".cr3"}
+_CR3_SUFFIXES    = {".cr3"}
 _RASTER_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
-OVERLAY_ALPHA = 0.40
+OVERLAY_ALPHA    = 0.40
 YOLO_PERSON_CLASS = 0
+KPS_CONF_THRESHOLD = 0.1   # lower threshold to catch feet/hands for bbox expansion
 
 
 def _load_image(path: Path):
@@ -61,13 +61,13 @@ def _load_image(path: Path):
 def _make_overlay(image_np, mask, bbox=None, face_kps=None):
     h, w = image_np.shape[:2]
     colour_layer = np.zeros_like(image_np)
-    colour_layer[mask]  = [30,  100, 255]   # blue  — subject
-    colour_layer[~mask] = [220,  40,  40]   # red   — background
+    colour_layer[mask]  = [30,  100, 255]
+    colour_layer[~mask] = [220,  40,  40]
     blended = (
         image_np.astype(float) * (1 - OVERLAY_ALPHA)
         + colour_layer.astype(float) * OVERLAY_ALPHA
     ).clip(0, 255).astype(np.uint8)
-    img = Image.fromarray(blended)
+    img  = Image.fromarray(blended)
     draw = ImageDraw.Draw(img)
     if bbox is not None:
         x1, y1, x2, y2 = (int(round(v)) for v in bbox)
@@ -87,12 +87,11 @@ def _label(img, text):
 
 
 def _no_detection_panel(image_inf, label):
-    img = image_inf.copy()
+    img  = image_inf.copy()
     draw = ImageDraw.Draw(img)
     draw.rectangle([0, 0, img.width, 22], fill=(0, 0, 0))
     draw.text((4, 3), label, fill=(255, 80, 80))
     return img
-
 
 
 def _yolo_select_person(results):
@@ -107,7 +106,6 @@ def _yolo_select_person(results):
     confs = boxes.conf.cpu()[person]
     areas = (xyxy[:, 2] - xyxy[:, 0]) * (xyxy[:, 3] - xyxy[:, 1])
     idx   = int(areas.argmax())
-    # Map back to original indices for mask lookup
     original_indices = torch.where(person)[0]
     return xyxy[idx].numpy(), float(confs[idx]), int(original_indices[idx])
 
@@ -116,8 +114,8 @@ def _yolo_face_kps(results, original_idx):
     """Extract face keypoints from a YOLOv8-pose result for a specific detection index."""
     if results.keypoints is None:
         return None
-    kps   = results.keypoints.xy.cpu().numpy()[original_idx]    # (17, 2)
-    confs = results.keypoints.conf.cpu().numpy()[original_idx]  # (17,)
+    kps   = results.keypoints.xy.cpu().numpy()[original_idx]
+    confs = results.keypoints.conf.cpu().numpy()[original_idx]
     indices = [i for i in FACE_KP_INDICES if confs[i] > FACE_KP_THRESHOLD]
     return kps[indices].tolist() if indices else None
 
@@ -126,39 +124,41 @@ def _yolo_seg_mask(results, original_idx, target_size):
     """Return resized boolean mask from YOLOv8-seg result, or None."""
     if results.masks is None:
         return None
-    mask_tensor = results.masks.data[original_idx]   # (H, W) float32
-    mask_img = Image.fromarray((mask_tensor.cpu().numpy() * 255).astype(np.uint8))
-    mask_resized = mask_img.resize(target_size, Image.NEAREST)
-    return np.array(mask_resized) > 127
+    mask_tensor = results.masks.data[original_idx]
+    mask_img    = Image.fromarray((mask_tensor.cpu().numpy() * 255).astype(np.uint8))
+    return np.array(mask_img.resize(target_size, Image.NEAREST)) > 127
 
 
-def _load_sam2(device):
-    """Load SAM 2.1 tiny from HuggingFace transformers."""
-    from transformers import Sam2Model, Sam2Processor
-    processor = Sam2Processor.from_pretrained(SAM2_MODEL)
-    model = Sam2Model.from_pretrained(SAM2_MODEL).to(device).eval()
-    return processor, model
-
-
-def _run_sam2(image_pil, bbox, sam2_processor, sam2_model, device):
-    """Return a boolean mask (H, W) using SAM 2.1 with a bbox prompt."""
-    x1, y1, x2, y2 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
-    inputs = sam2_processor(
-        images=image_pil,
-        input_boxes=[[[x1, y1, x2, y2]]],
-        return_tensors="pt",
-    ).to(device)
-    with torch.no_grad():
-        outputs = sam2_model(**inputs)
-    # post_process_masks returns list[Tensor[obj, num_masks, H, W]], one per image
-    masks = sam2_processor.post_process_masks(
-        outputs.pred_masks,
-        inputs["original_sizes"],
+def _pad_bbox(bbox, pad_frac, w, h):
+    """Expand bbox symmetrically by pad_frac (e.g. 0.15 = 15%), clipped to image."""
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    bw = (x2 - x1) * (1 + pad_frac)
+    bh = (y2 - y1) * (1 + pad_frac)
+    return (
+        max(0.0, cx - bw / 2),
+        max(0.0, cy - bh / 2),
+        min(float(w), cx + bw / 2),
+        min(float(h), cy + bh / 2),
     )
-    # masks[0]: (1, num_masks, H, W) — single object, multiple candidate masks
-    # pick highest IoU score; iou_scores: [batch, obj, num_masks]
-    best = int(outputs.iou_scores[0, 0].argmax())
-    return masks[0][0, best].cpu().numpy().astype(bool)
+
+
+def _yolo_expand_with_kps(bbox, results, original_idx, w, h):
+    """Expand bbox to include all high-confidence keypoints (all 17, not just face)."""
+    if results.keypoints is None:
+        return bbox
+    kps   = results.keypoints.xy.cpu().numpy()[original_idx]    # (17, 2)
+    confs = results.keypoints.conf.cpu().numpy()[original_idx]  # (17,)
+    valid = kps[confs > KPS_CONF_THRESHOLD]
+    if len(valid) == 0:
+        return bbox
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    return (
+        min(x1, float(valid[:, 0].min())),
+        min(y1, float(valid[:, 1].min())),
+        max(x2, float(valid[:, 0].max())),
+        max(y2, float(valid[:, 1].max())),
+    )
 
 
 def _stack(*panels, gap=8):
@@ -174,11 +174,13 @@ def _stack(*panels, gap=8):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Four-panel diagnostic comparing GDINO/YOLOv8 detectors with MobileSAM/SAM2.1."
+        description="Five-panel diagnostic: GDINO vs YOLOv8 bbox strategies with SAM 2.1."
     )
     parser.add_argument("input_folder",  type=Path)
     parser.add_argument("output_folder", type=Path)
     parser.add_argument("--n", type=int, default=20, help="Max images to process (default 20)")
+    parser.add_argument("--yolo-padding", type=float, default=0.15, metavar="P",
+                        help="Fraction to expand YOLO bbox for panel 3 (default 0.15 = 15%%)")
     args = parser.parse_args()
 
     root    = args.input_folder.expanduser().resolve()
@@ -191,8 +193,9 @@ def main():
         raise SystemExit(f"No supported image files found under: {root}")
     files = all_files[: args.n]
     print(f"Found {len(all_files)} files, processing {len(files)}.")
+    print(f"YOLO padding (panel 3): {args.yolo_padding * 100:.0f}%")
 
-    print("Loading GDINO + MobileSAM + ViTPose...")
+    print("Loading GDINO + SAM 2.1 + ViTPose...")
     models = load_ml_models()
     gdino_processor, gdino_model = models[0], models[1]
     device = next(gdino_model.parameters()).device
@@ -201,18 +204,16 @@ def main():
     from ultralytics import YOLO
     yolo_pose = YOLO("yolov8n-pose.pt")
     yolo_seg  = YOLO("yolov8n-seg.pt")
-
-    print(f"Loading SAM 2.1 tiny ({SAM2_MODEL})...")
-    sam2_processor, sam2_model = _load_sam2(device)
     print("All models loaded.\n")
 
-    t_gdino      = []
-    t_vitpose    = []
-    t_mobilesam1 = []   # GDINO → MobileSAM
-    t_mobilesam2 = []   # YOLOv8-pose → MobileSAM
-    t_yolo_pose  = []
-    t_yolo_seg   = []
-    t_sam2       = []
+    t_gdino       = []
+    t_vitpose     = []
+    t_sam_gdino   = []
+    t_yolo_pose   = []
+    t_sam_tight   = []
+    t_sam_padded  = []
+    t_sam_kpu     = []
+    t_yolo_seg    = []
 
     for path in files:
         print(f"  {path.name}")
@@ -225,7 +226,7 @@ def main():
         w_inf, h_inf  = image_inf.size
         image_np      = np.array(image_inf)
 
-        # ── GDINO detection (shared by panels 1 and 4) ──────────────────
+        # ── GDINO detection ──────────────────────────────────────────────
         gdino_bbox, gdino_kps = None, None
         try:
             t0 = time.perf_counter()
@@ -240,11 +241,9 @@ def main():
                     print(f"    GDINO: {len(boxes)} people, using largest")
                 else:
                     gdino_bbox = boxes[0]
-                vp_proc  = models[4]
-                vp_model = models[5]
                 t0 = time.perf_counter()
                 with torch.no_grad():
-                    kps, scores = _run_vitpose(image_inf, gdino_bbox, vp_proc, vp_model, device)
+                    kps, scores = _run_vitpose(image_inf, gdino_bbox, models[4], models[5], device)
                 t_vitpose.append(time.perf_counter() - t0)
                 if kps is not None:
                     idx = [i for i in FACE_KP_INDICES if scores[i] > FACE_KP_THRESHOLD]
@@ -254,23 +253,23 @@ def main():
         except Exception as e:
             print(f"    GDINO failed: {e}", file=sys.stderr)
 
-        # ── Panel 1: GDINO → MobileSAM ──────────────────────────────────
+        # ── Panel 1: GDINO → SAM 2.1 ─────────────────────────────────────
         if gdino_bbox is not None:
             try:
                 t0 = time.perf_counter()
                 with torch.no_grad():
                     mask1 = _run_sam(image_inf, gdino_bbox, models[2], models[3], device)
-                t_mobilesam1.append(time.perf_counter() - t0)
+                t_sam_gdino.append(time.perf_counter() - t0)
                 panel1 = _make_overlay(image_np, mask1, bbox=gdino_bbox, face_kps=gdino_kps)
-                panel1 = _label(panel1, "GDINO → MobileSAM")
+                panel1 = _label(panel1, "GDINO → SAM 2.1")
             except Exception as e:
-                print(f"    MobileSAM failed: {e}", file=sys.stderr)
-                panel1 = _no_detection_panel(image_inf, "GDINO → MobileSAM  [error]")
+                print(f"    SAM (panel 1) failed: {e}", file=sys.stderr)
+                panel1 = _no_detection_panel(image_inf, "GDINO → SAM 2.1  [error]")
         else:
-            panel1 = _no_detection_panel(image_inf, "GDINO → MobileSAM  [no detection]")
+            panel1 = _no_detection_panel(image_inf, "GDINO → SAM 2.1  [no detection]")
 
-        # ── Panel 2: YOLOv8-pose → MobileSAM ───────────────────────────
-        yolo_bbox, yolo_kps = None, None
+        # ── YOLO-pose detection (shared by panels 2–4) ───────────────────
+        yolo_bbox, yolo_kps, res_pose, orig_idx = None, None, None, None
         try:
             t0 = time.perf_counter()
             with torch.no_grad():
@@ -280,28 +279,46 @@ def main():
             if sel is not None:
                 yolo_bbox, _, orig_idx = sel
                 yolo_kps = _yolo_face_kps(res_pose, orig_idx)
-                if len(res_pose.boxes) > 1:
-                    print(f"    YOLO-pose: {int((res_pose.boxes.cls==0).sum())} people, using largest")
+                if int((res_pose.boxes.cls.cpu() == 0).sum()) > 1:
+                    print(f"    YOLO-pose: {int((res_pose.boxes.cls.cpu()==0).sum())} people, using largest")
             else:
                 print(f"    YOLO-pose: no person detected")
         except Exception as e:
             print(f"    YOLO-pose failed: {e}", file=sys.stderr)
 
-        if yolo_bbox is not None:
+        def _sam_panel(bbox, label, t_list):
             try:
                 t0 = time.perf_counter()
                 with torch.no_grad():
-                    mask2 = _run_sam(image_inf, yolo_bbox, models[2], models[3], device)
-                t_mobilesam2.append(time.perf_counter() - t0)
-                panel2 = _make_overlay(image_np, mask2, bbox=yolo_bbox, face_kps=yolo_kps)
-                panel2 = _label(panel2, "YOLOv8-pose → MobileSAM")
+                    m = _run_sam(image_inf, bbox, models[2], models[3], device)
+                t_list.append(time.perf_counter() - t0)
+                p = _make_overlay(image_np, m, bbox=bbox, face_kps=yolo_kps)
+                return _label(p, label)
             except Exception as e:
-                print(f"    MobileSAM (panel 2) failed: {e}", file=sys.stderr)
-                panel2 = _no_detection_panel(image_inf, "YOLOv8-pose → MobileSAM  [error]")
-        else:
-            panel2 = _no_detection_panel(image_inf, "YOLOv8-pose → MobileSAM  [no detection]")
+                print(f"    SAM failed for {label}: {e}", file=sys.stderr)
+                return _no_detection_panel(image_inf, f"{label}  [error]")
 
-        # ── Panel 3: YOLOv8-seg (mask only, no SAM) ─────────────────────
+        # ── Panel 2: YOLO tight bbox → SAM 2.1 ──────────────────────────
+        if yolo_bbox is not None:
+            panel2 = _sam_panel(yolo_bbox, "YOLO tight → SAM 2.1", t_sam_tight)
+        else:
+            panel2 = _no_detection_panel(image_inf, "YOLO tight → SAM 2.1  [no detection]")
+
+        # ── Panel 3: YOLO + padding → SAM 2.1 ───────────────────────────
+        if yolo_bbox is not None:
+            padded_bbox = _pad_bbox(yolo_bbox, args.yolo_padding, w_inf, h_inf)
+            panel3 = _sam_panel(padded_bbox, f"YOLO +{args.yolo_padding*100:.0f}% → SAM 2.1", t_sam_padded)
+        else:
+            panel3 = _no_detection_panel(image_inf, "YOLO padded → SAM 2.1  [no detection]")
+
+        # ── Panel 4: YOLO + keypoints union → SAM 2.1 ───────────────────
+        if yolo_bbox is not None and res_pose is not None:
+            kpu_bbox = _yolo_expand_with_kps(yolo_bbox, res_pose, orig_idx, w_inf, h_inf)
+            panel4 = _sam_panel(kpu_bbox, "YOLO kp-union → SAM 2.1", t_sam_kpu)
+        else:
+            panel4 = _no_detection_panel(image_inf, "YOLO kp-union → SAM 2.1  [no detection]")
+
+        # ── Panel 5: YOLOv8-seg (no SAM) ────────────────────────────────
         try:
             t0 = time.perf_counter()
             with torch.no_grad():
@@ -312,33 +329,18 @@ def main():
                 seg_bbox, _, seg_idx = sel_seg
                 seg_mask = _yolo_seg_mask(res_seg, seg_idx, (w_inf, h_inf))
                 if seg_mask is not None:
-                    panel3 = _make_overlay(image_np, seg_mask, bbox=seg_bbox)
-                    panel3 = _label(panel3, "YOLOv8-seg")
+                    panel5 = _make_overlay(image_np, seg_mask, bbox=seg_bbox)
+                    panel5 = _label(panel5, "YOLOv8-seg")
                 else:
-                    panel3 = _no_detection_panel(image_inf, "YOLOv8-seg  [no mask]")
+                    panel5 = _no_detection_panel(image_inf, "YOLOv8-seg  [no mask]")
             else:
-                print(f"    YOLO-seg: no person detected")
-                panel3 = _no_detection_panel(image_inf, "YOLOv8-seg  [no detection]")
+                panel5 = _no_detection_panel(image_inf, "YOLOv8-seg  [no detection]")
         except Exception as e:
             print(f"    YOLO-seg failed: {e}", file=sys.stderr)
-            panel3 = _no_detection_panel(image_inf, "YOLOv8-seg  [error]")
-
-        # ── Panel 4: GDINO → SAM 2.1 tiny ───────────────────────────────
-        if gdino_bbox is not None:
-            try:
-                t0 = time.perf_counter()
-                mask4 = _run_sam2(image_inf, gdino_bbox, sam2_processor, sam2_model, device)
-                t_sam2.append(time.perf_counter() - t0)
-                panel4 = _make_overlay(image_np, mask4, bbox=gdino_bbox, face_kps=gdino_kps)
-                panel4 = _label(panel4, "GDINO → SAM 2.1 tiny")
-            except Exception as e:
-                print(f"    SAM 2.1 failed: {e}", file=sys.stderr)
-                panel4 = _no_detection_panel(image_inf, "GDINO → SAM 2.1  [error]")
-        else:
-            panel4 = _no_detection_panel(image_inf, "GDINO → SAM 2.1  [no detection]")
+            panel5 = _no_detection_panel(image_inf, "YOLOv8-seg  [error]")
 
         out_path = out_dir / (path.stem + "_diagnostic.jpg")
-        _stack(panel1, panel2, panel3, panel4).save(out_path, format="JPEG", quality=88)
+        _stack(panel1, panel2, panel3, panel4, panel5).save(out_path, format="JPEG", quality=88)
         print(f"    → {out_path.name}")
 
     def _mean(ts):
@@ -346,30 +348,35 @@ def main():
 
     print(f"\nDone. {len(files)} images written to {out_dir}")
     print(f"\nMean inference times (n={len(files)} images):")
-    print(f"  {'Component':<30}  {'mean (s)':>8}  {'n':>4}")
-    print(f"  {'-'*30}  {'-'*8}  {'-'*4}")
-    rows = [
-        ("GDINO detection",            t_gdino),
-        ("ViTPose",                    t_vitpose),
-        ("MobileSAM (GDINO bbox)",     t_mobilesam1),
-        ("MobileSAM (YOLOv8 bbox)",    t_mobilesam2),
-        ("YOLOv8-pose detection",      t_yolo_pose),
-        ("YOLOv8-seg detection+mask",  t_yolo_seg),
-        ("SAM 2.1 tiny",               t_sam2),
-    ]
-    for label, ts in rows:
-        print(f"  {label:<30}  {_mean(ts):>8.3f}  {len(ts):>4}")
+    print(f"  {'Component':<35}  {'mean (s)':>8}  {'n':>4}")
+    print(f"  {'-'*35}  {'-'*8}  {'-'*4}")
+    for label, ts in [
+        ("GDINO detection",               t_gdino),
+        ("ViTPose",                       t_vitpose),
+        ("SAM 2.1 (GDINO bbox)",          t_sam_gdino),
+        ("YOLOv8-pose detection",         t_yolo_pose),
+        ("SAM 2.1 (YOLO tight bbox)",     t_sam_tight),
+        (f"SAM 2.1 (YOLO +{args.yolo_padding*100:.0f}% pad)", t_sam_padded),
+        ("SAM 2.1 (YOLO kp-union bbox)",  t_sam_kpu),
+        ("YOLOv8-seg",                    t_yolo_seg),
+    ]:
+        print(f"  {label:<35}  {_mean(ts):>8.3f}  {len(ts):>4}")
     print()
-    print(f"  {'Pipeline':<30}  {'mean (s)':>8}")
-    print(f"  {'-'*30}  {'-'*8}")
-    pipelines = [
-        ("GDINO → MobileSAM",          _mean(t_gdino) + _mean(t_vitpose) + _mean(t_mobilesam1)),
-        ("YOLOv8-pose → MobileSAM",    _mean(t_yolo_pose) + _mean(t_mobilesam2)),
-        ("YOLOv8-seg",                 _mean(t_yolo_seg)),
-        ("GDINO → SAM 2.1 tiny",       _mean(t_gdino) + _mean(t_vitpose) + _mean(t_sam2)),
-    ]
-    for label, total in pipelines:
-        print(f"  {label:<30}  {total:>8.3f}")
+    print(f"  {'Pipeline':<35}  {'mean (s)':>8}")
+    print(f"  {'-'*35}  {'-'*8}")
+    for label, total in [
+        ("GDINO + ViTPose → SAM 2.1",
+            _mean(t_gdino) + _mean(t_vitpose) + _mean(t_sam_gdino)),
+        ("YOLO tight → SAM 2.1",
+            _mean(t_yolo_pose) + _mean(t_sam_tight)),
+        (f"YOLO +{args.yolo_padding*100:.0f}% pad → SAM 2.1",
+            _mean(t_yolo_pose) + _mean(t_sam_padded)),
+        ("YOLO kp-union → SAM 2.1",
+            _mean(t_yolo_pose) + _mean(t_sam_kpu)),
+        ("YOLOv8-seg",
+            _mean(t_yolo_seg)),
+    ]:
+        print(f"  {label:<35}  {total:>8.3f}")
 
 
 if __name__ == "__main__":
