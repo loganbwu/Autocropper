@@ -43,6 +43,7 @@ _models_ready = threading.Event()
 _ml_models = None
 _ml_models_ready = threading.Event()
 _ml_models_loading = False
+_ml_models_error: str = ""
 _ml_models_lock = threading.Lock()
 
 
@@ -56,18 +57,26 @@ def _load_models_thread():
 
 def _ensure_ml_models_loaded():
     """Trigger ML model loading if not already started; returns immediately."""
-    global _ml_models, _ml_models_loading
+    global _ml_models, _ml_models_loading, _ml_models_error
     with _ml_models_lock:
         if _ml_models_ready.is_set() or _ml_models_loading:
             return
         _ml_models_loading = True
+        _ml_models_error = ""
 
     def _load():
-        global _ml_models
-        print("Loading ML models (SAM2 + ViTPose) in background...")
-        _ml_models = load_ml_models()
-        print("ML models ready.")
-        _ml_models_ready.set()
+        global _ml_models, _ml_models_loading, _ml_models_error
+        print("Loading ML models (SAM + ViTPose) in background...")
+        try:
+            _ml_models = load_ml_models()
+            print("ML models ready.")
+            _ml_models_ready.set()
+        except Exception as e:
+            print(f"ERROR: failed to load ML models: {e}")
+            import traceback; traceback.print_exc()
+            with _ml_models_lock:
+                _ml_models_error = str(e)
+                _ml_models_loading = False  # allow retry
 
     threading.Thread(target=_load, daemon=True).start()
 
@@ -396,6 +405,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
             "ml_dataset_name": app.config["ml_dataset_name"],
             "ml_dataset_records": app.config["ml_dataset_records"],
             "ml_models_ready": _ml_models_ready.is_set(),
+            "ml_models_error": _ml_models_error,
         }
 
     @app.route("/api/state")

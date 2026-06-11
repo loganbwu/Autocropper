@@ -298,17 +298,24 @@
       const name = data.ml_dataset_name || 'dataset.pkl';
       fileLabel.textContent = name;
       fileLabel.title = name;
-      if (!_mlModelsReady) {
+      if (data.ml_models_error) {
+        status.textContent = 'model load failed';
+        status.title = data.ml_models_error;
+      } else if (!_mlModelsReady) {
         status.textContent = 'loading models...';
+        status.title = '';
       } else if (!_mlMode) {
         status.textContent = data.ml_dataset_records ? `${data.ml_dataset_records} records` : '';
+        status.title = '';
       } else {
         status.textContent = '';
+        status.title = '';
       }
     } else {
       fileLabel.textContent = 'dataset';
       fileLabel.title = '';
       status.textContent = '';
+      status.title = '';
     }
   }
 
