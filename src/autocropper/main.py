@@ -37,63 +37,43 @@ def extract_preview_image(cr3_path: Path) -> Image.Image:
         return Image.fromarray(thumb.data).convert("RGB")
 
 
-def _materialize_meta_params(model: torch.nn.Module, device) -> None:
-    """Initialize meta-device parameters and buffers left by missing checkpoint keys.
+def _get_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
-    When a HuggingFace checkpoint omits some weights (e.g. GroundingDINO's
-    bbox_embed decoder heads), accelerate leaves those tensors on the 'meta'
-    device.  Its pre-forward hook then raises because they don't match the
-    execution device.  Replacing them with zeros on the real device fixes this;
-    the weights are effectively randomly initialised by the model __init__ but
-    those layers are not used for detection outputs we rely on.
+
+def _load_pretrained(cls, model_id, device, local_only: bool, **kwargs):
+    """Load a transformers model without device_map to avoid meta-tensor issues.
+
+    device_map= with accelerate leaves missing checkpoint keys on the meta
+    device and can't be recovered with setattr.  Loading with
+    low_cpu_mem_usage=False initialises all params on CPU first (missing keys
+    keep their __init__ values), then .to(device) moves everything to MPS/GPU
+    without any meta tensors.
     """
-    for name, param in list(model.named_parameters()):
-        if not param.is_meta:
-            continue
-        *path, attr = name.split('.')
-        submod = model
-        for part in path:
-            submod = getattr(submod, part)
-        setattr(submod, attr, torch.nn.Parameter(
-            torch.zeros(param.shape, dtype=param.dtype, device=device),
-            requires_grad=param.requires_grad,
-        ))
-    for name, buf in list(model.named_buffers()):
-        if not buf.is_meta:
-            continue
-        *path, attr = name.split('.')
-        submod = model
-        for part in path:
-            submod = getattr(submod, part)
-        submod.register_buffer(attr, torch.zeros(buf.shape, dtype=buf.dtype, device=device))
+    load_kw = dict(low_cpu_mem_usage=False, **kwargs)
+    try:
+        model = cls.from_pretrained(model_id, local_files_only=True, **load_kw)
+    except Exception:
+        model = cls.from_pretrained(model_id, **load_kw)
+    return model.to(device).eval()
 
 
 def load_models():
     from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = "mps"
-    else:
-        device = "cpu"
-
+    device = _get_device()
     print(f"Loading models on {device}...")
 
-    kwargs = {"local_files_only": True}
     try:
-        gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True, **kwargs)
-        gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-            GDINO_MODEL, device_map=device, **kwargs
-        ).eval()
+        gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True, local_files_only=True)
     except Exception:
-        # Not cached yet — download and cache
         gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True)
-        gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-            GDINO_MODEL, device_map=device
-        ).eval()
 
-    _materialize_meta_params(gdino_model, device)
+    gdino_model = _load_pretrained(AutoModelForZeroShotObjectDetection, GDINO_MODEL, device, local_only=True)
     return gdino_processor, gdino_model
 
 
@@ -103,39 +83,32 @@ def load_ml_models():
     from transformers import AutoProcessor, VitPoseForPoseEstimation
 
     gdino_processor, gdino_model = load_models()
-
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = "mps"
-    else:
-        device = "cpu"
+    device = _get_device()
 
     SAM_MODEL = "facebook/sam-vit-base"
     VITPOSE_MODEL = "usyd-community/vitpose-base-simple"
 
-    kwargs = {"local_files_only": True}
     try:
-        sam_processor = SamProcessor.from_pretrained(SAM_MODEL, **kwargs)
-        sam_model = SamModel.from_pretrained(SAM_MODEL, device_map=device, **kwargs).eval()
-        vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL, **kwargs)
-        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, device_map=device, **kwargs).eval()
+        sam_processor = SamProcessor.from_pretrained(SAM_MODEL, local_files_only=True)
     except Exception:
         sam_processor = SamProcessor.from_pretrained(SAM_MODEL)
-        sam_model = SamModel.from_pretrained(SAM_MODEL, device_map=device).eval()
-        vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL)
-        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, device_map=device).eval()
 
-    _materialize_meta_params(sam_model, device)
-    _materialize_meta_params(vitpose_model, device)
+    sam_model = _load_pretrained(SamModel, SAM_MODEL, device, local_only=True)
+
+    try:
+        vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL, local_files_only=True)
+    except Exception:
+        vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL)
+
+    vitpose_model = _load_pretrained(VitPoseForPoseEstimation, VITPOSE_MODEL, device, local_only=True)
+
     print("ML models (SAM + ViTPose) loaded.")
     return gdino_processor, gdino_model, sam_processor, sam_model, vitpose_processor, vitpose_model
 
 
 def detect_people_with_masks(models, image: Image.Image):
     gdino_processor, gdino_model = models
-    param = next(gdino_model.parameters())
-    device = param.device if param.device.type != "meta" else torch.device("cpu")
+    device = next(gdino_model.parameters()).device
 
     w, h = image.size
 
