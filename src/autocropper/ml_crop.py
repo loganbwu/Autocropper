@@ -100,35 +100,21 @@ def _to_device(v, device):
 
 
 def _run_sam(image, bbox, sam_processor, sam_model, device):
-    """Run SAM with a single bbox prompt; return best binary mask (H, W) bool.
-
-    When sam_model is None, sam_processor is a MobileSAM SamPredictor instance.
-    """
+    """Run SAM 2.1 with a single bbox prompt; return best binary mask (H, W) bool."""
     x1, y1, x2, y2 = (float(v) for v in bbox)
-    if sam_model is None:
-        # MobileSAM path
-        image_np = np.array(image)  # (H, W, 3) uint8 RGB
-        with torch.no_grad():
-            sam_processor.set_image(image_np)
-            masks, _, _ = sam_processor.predict(
-                box=np.array([x1, y1, x2, y2]),
-                multimask_output=False,
-            )
-        return masks[0].astype(bool)  # (H, W)
-    # Transformers SAM path (kept as fallback)
-    inputs = sam_processor(images=image, input_boxes=[[[x1, y1, x2, y2]]], return_tensors="pt")
-    inputs = {k: _to_device(v, device) for k, v in inputs.items()}
+    inputs = sam_processor(
+        images=image,
+        input_boxes=[[[x1, y1, x2, y2]]],
+        return_tensors="pt",
+    ).to(device)
     with torch.no_grad():
         outputs = sam_model(**inputs)
-    masks_list = sam_processor.image_processor.post_process_masks(
-        outputs.pred_masks.cpu(),
-        inputs["original_sizes"].cpu(),
-        inputs["reshaped_input_sizes"].cpu(),
+    masks = sam_processor.post_process_masks(
+        outputs.pred_masks,
+        inputs["original_sizes"],
     )
-    mask_t = masks_list[0]
-    iou = outputs.iou_scores[0].cpu().numpy().flatten()
-    mask_arr = mask_t.reshape(-1, mask_t.shape[-2], mask_t.shape[-1]).numpy()
-    return mask_arr[int(np.argmax(iou))].astype(bool)
+    best = int(outputs.iou_scores[0, 0].argmax())
+    return masks[0][0, best].cpu().numpy().astype(bool)
 
 
 def _run_vitpose(image, bbox, vitpose_processor, vitpose_model, device):

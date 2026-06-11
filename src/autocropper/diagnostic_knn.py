@@ -97,9 +97,18 @@ def _mask_content_bbox(mask):
     cols = np.any(mask, axis=0)
     if not rows.any():
         return 0, 0, mask.shape[1], mask.shape[0]
-    y1, y2 = int(np.where(rows)[0][[0, -1]])
-    x1, x2 = int(np.where(cols)[0][[0, -1]])
+    y1, y2 = np.where(rows)[0][[0, -1]].tolist()
+    x1, x2 = np.where(cols)[0][[0, -1]].tolist()
     return x1, y1, x2, y2
+
+
+def _draw_label(img, text, alpha=160):
+    """Overlay a semi-transparent black bar with white text at the top of img."""
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(overlay).rectangle([0, 0, img.width, 20], fill=(0, 0, 0, alpha))
+    out = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    ImageDraw.Draw(out).text((3, 3), text, fill=(255, 255, 255))
+    return out
 
 
 def _neighbour_thumb(record, rank, distance, size=THUMB_SIZE):
@@ -119,10 +128,8 @@ def _neighbour_thumb(record, rank, distance, size=THUMB_SIZE):
                 x = (size - src_img.width)  // 2
                 y = (size - src_img.height) // 2
                 canvas_img.paste(src_img, (x, y))
-                img  = canvas_img
-                draw = ImageDraw.Draw(img)
-                draw.rectangle([0, 0, size, 20], fill=(0, 0, 0))
-                draw.text((3, 2), f"#{rank}  dist={distance:.3f}", fill=(255, 255, 255))
+                img = canvas_img
+                img = _draw_label(img, f"#{rank}  dist={distance:.3f}")
                 return img
         except Exception:
             pass  # fall through to mask rendering
@@ -156,10 +163,7 @@ def _neighbour_thumb(record, rank, distance, size=THUMB_SIZE):
     ccy = int(my1 + record.crop_center[1] * mh)
     draw.ellipse([ccx-r, ccy-r, ccx+r, ccy+r], fill=(220, 60, 60))
 
-    # Label bar at top
-    draw.rectangle([0, 0, size, 20], fill=(0, 0, 0))
-    draw.text((3, 2), f"#{rank}  dist={distance:.3f}", fill=(255, 255, 255))
-
+    img = _draw_label(img, f"#{rank}  dist={distance:.3f}")
     return img
 
 

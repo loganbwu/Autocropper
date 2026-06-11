@@ -104,27 +104,12 @@ def load_models():
     return gdino_processor, gdino_model
 
 
-def _get_mobile_sam_checkpoint() -> str:
-    """Return local path to MobileSAM checkpoint, downloading if necessary."""
-    import urllib.request
-    try:
-        from huggingface_hub import hf_hub_download
-        return hf_hub_download("dhkim2810/MobileSAM", "mobile_sam.pt")
-    except Exception:
-        pass
-    cache_dir = Path.home() / ".cache" / "autocropper"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    ckpt = cache_dir / "mobile_sam.pt"
-    if not ckpt.exists():
-        url = "https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt"
-        print(f"  Downloading MobileSAM weights (~10 MB)...")
-        urllib.request.urlretrieve(url, ckpt)
-    return str(ckpt)
+SAM2_MODEL = "facebook/sam2.1-hiera-tiny"
 
 
 def load_ml_models(gdino_models=None):
-    """Load MobileSAM + ViTPose; reuse an existing GDINO pair if supplied."""
-    from transformers import AutoProcessor, VitPoseForPoseEstimation
+    """Load SAM 2.1 tiny + ViTPose; reuse an existing GDINO pair if supplied."""
+    from transformers import AutoProcessor, Sam2Model, Sam2Processor, VitPoseForPoseEstimation
 
     if gdino_models is not None:
         gdino_processor, gdino_model = gdino_models
@@ -134,23 +119,20 @@ def load_ml_models(gdino_models=None):
 
     VITPOSE_MODEL = "usyd-community/vitpose-base-simple"
 
-    # MobileSAM uses TinyViT encoder — much faster than SAM ViT-Base
-    from mobile_sam import sam_model_registry, SamPredictor
-    ckpt = _get_mobile_sam_checkpoint()
-    print(f"  Loading MobileSAM from {ckpt}...")
-    _sam = sam_model_registry["vit_t"](checkpoint=ckpt).to(device).eval()
-    sam_predictor = SamPredictor(_sam)
+    try:
+        sam2_processor = Sam2Processor.from_pretrained(SAM2_MODEL, local_files_only=True)
+    except Exception:
+        sam2_processor = Sam2Processor.from_pretrained(SAM2_MODEL)
+    sam2_model = _load_pretrained(Sam2Model, SAM2_MODEL, device, local_only=True)
 
     try:
         vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL, local_files_only=True)
     except Exception:
         vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL)
-
     vitpose_model = _load_pretrained(VitPoseForPoseEstimation, VITPOSE_MODEL, device, local_only=True)
 
-    print("ML models (MobileSAM + ViTPose) loaded.")
-    # Slot 2 = sam_predictor, slot 3 = None — the None signals _run_sam to use MobileSAM API
-    return gdino_processor, gdino_model, sam_predictor, None, vitpose_processor, vitpose_model
+    print("ML models (SAM 2.1 tiny + ViTPose) loaded.")
+    return gdino_processor, gdino_model, sam2_processor, sam2_model, vitpose_processor, vitpose_model
 
 
 def detect_people_with_masks(models, image: Image.Image):
