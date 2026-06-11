@@ -145,12 +145,16 @@ def _neighbour_thumb(record, rank, distance, size=THUMB_SIZE):
     If source_path is set and the file exists, shows the actual image.
     Falls back to a mask silhouette for older records without a path.
     """
+    mirrored = getattr(record, "mirrored", False)
+
     # Attempt to load source image
     source = Path(record.source_path) if getattr(record, "source_path", "") else None
     if source and source.exists():
         try:
             src_img = _load_image(source)
             if src_img is not None:
+                if mirrored:
+                    src_img = src_img.transpose(Image.FLIP_LEFT_RIGHT)
                 src_img.thumbnail((size, size), Image.LANCZOS)
                 canvas_img = Image.new("RGB", (size, size), (30, 30, 30))
                 x = (size - src_img.width)  // 2
@@ -162,7 +166,7 @@ def _neighbour_thumb(record, rank, distance, size=THUMB_SIZE):
         except Exception:
             pass  # fall through to mask rendering
 
-    # Fallback: mask silhouette
+    # Fallback: mask silhouette (record.mask is already flipped for mirrored records)
     mask_small = np.array(
         Image.fromarray(record.mask.astype(np.uint8) * 255)
               .resize((size, size), Image.NEAREST)
