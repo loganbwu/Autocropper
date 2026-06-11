@@ -16,6 +16,7 @@ dependencies = [
     "rawpy>=0.27.0",
     "accelerate>=1.13.0",
     "mobile_sam @ git+https://github.com/ChaoningZhang/MobileSAM.git",
+    "ultralytics>=8.0",
 ]
 readme = "README.md"
 requires-python = ">= 3.8"
