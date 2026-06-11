@@ -22,6 +22,7 @@ MASK_SIZE = 1024
 KNN_COMPARE_SIZE = 64                 # masks are downsampled to this resolution for k-NN comparison
 AR_EPSILON = 0.05                     # aspect-ratio tolerance for similarity matching
 DEFAULT_N_NEIGHBORS = 10
+MAX_INFERENCE_SIZE = 800              # longest edge fed to models; SAM/GDINO resize internally anyway
 
 
 # ---- Data structures ----
@@ -66,6 +67,16 @@ class TrainingDataset:
 
 
 # ---- Low-level inference helpers ----
+
+def _resize_for_inference(image):
+    """Shrink image so longest edge ≤ MAX_INFERENCE_SIZE. Returns (image, scale).
+    Coordinates in inference space must be divided by scale to recover original pixels."""
+    w, h = image.size
+    scale = min(MAX_INFERENCE_SIZE / max(w, h), 1.0)
+    if scale >= 1.0:
+        return image, 1.0
+    return image.resize((int(w * scale), int(h * scale)), Image.LANCZOS), scale
+
 
 def _to_device(v, device):
     """Move tensor to device; falls back to float32 if MPS rejects float64."""
@@ -159,7 +170,11 @@ def extract_features(image, models):
 
     bbox = boxes[0]  # [x1, y1, x2, y2]
 
-    full_mask = _run_sam(image, bbox, sam_processor, sam_model, device)
+    try:
+        full_mask = _run_sam(image, bbox, sam_processor, sam_model, device)
+    except Exception as e:
+        print(f"  SAM failed: {e}")
+        return None
     t2 = time.perf_counter()
     bbox_mask = _mask_bbox(full_mask)
     if bbox_mask is None:
@@ -170,7 +185,11 @@ def extract_features(image, models):
     if mask_w <= 0 or mask_h <= 0:
         return None
 
-    kps, scores = _run_vitpose(image, bbox, vitpose_processor, vitpose_model, device)
+    try:
+        kps, scores = _run_vitpose(image, bbox, vitpose_processor, vitpose_model, device)
+    except Exception as e:
+        print(f"  ViTPose failed: {e}")
+        return None
     t3 = time.perf_counter()
     if kps is None:
         return None
@@ -194,12 +213,14 @@ def build_training_record(image, crop_xyxy_display, models):
 
     Returns None if the image cannot be processed.
     """
-    result = extract_features(image, models)
+    image_inf, inf_scale = _resize_for_inference(image)
+    result = extract_features(image_inf, models)
     if result is None:
         return None
 
     mask_cropped, face_centroid, aspect_ratio, (mx1, my1, mx2, my2) = result
-    crop_x1, crop_y1, crop_x2, crop_y2 = crop_xyxy_display
+    # Scale crop coordinates to inference resolution so all values are in the same space.
+    crop_x1, crop_y1, crop_x2, crop_y2 = (c * inf_scale for c in crop_xyxy_display)
 
     mask_w_px = float(mx2 - mx1)
     mask_h_px = float(my2 - my1)
@@ -295,16 +316,23 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
     orientation = get_orientation(cr3_path)
     image = apply_orientation(extract_preview_image(cr3_path), orientation)
     w_img, h_img = image.size
+    image_inf, inf_scale = _resize_for_inference(image)
     t_io = time.perf_counter()
 
     lock_ctx = _inference_lock if _inference_lock is not None else contextlib.nullcontext()
     with lock_ctx:
-        result = extract_features(image, models)
+        result = extract_features(image_inf, models)
     t_inf = time.perf_counter()
     if result is None:
         return None
 
     query_mask, query_fc, query_ar, (mx1, my1, mx2, my2) = result
+    # Scale mask bbox from inference resolution back to original image coordinates.
+    if inf_scale < 1.0:
+        mx1 = int(round(mx1 / inf_scale))
+        my1 = int(round(my1 / inf_scale))
+        mx2 = int(round(mx2 / inf_scale))
+        my2 = int(round(my2 / inf_scale))
     query_norm = _normalize_mask(query_mask)
 
     candidates, masks_small, face_centroids_arr = _get_ar_candidates(dataset, query_ar)
