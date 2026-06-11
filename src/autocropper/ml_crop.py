@@ -168,11 +168,16 @@ def extract_features(image, models, name=None):
     t0 = time.perf_counter()
     boxes, _, w, h = detect_people_with_masks((gdino_processor, gdino_model), image)
     t1 = time.perf_counter()
-    if len(boxes) != 1:
-        print(f"  GDINO (person detection){label}: found {len(boxes)} {'people' if len(boxes) != 1 else 'person'} (need exactly 1)")
+    if len(boxes) == 0:
+        print(f"  GDINO (person detection){label}: no people detected")
         return None
-
-    bbox = boxes[0]  # [x1, y1, x2, y2]
+    if len(boxes) > 1:
+        areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in boxes]
+        idx = int(np.argmax(areas))
+        bbox = boxes[idx]
+        print(f"  GDINO (person detection){label}: found {len(boxes)} people, using largest (box {idx + 1})")
+    else:
+        bbox = boxes[0]
 
     try:
         full_mask = _run_sam(image, bbox, sam_processor, sam_model, device)
