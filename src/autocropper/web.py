@@ -252,7 +252,8 @@ class ReviewState:
             }
 
 
-def create_app(initial_path: str = "", force: bool = False, all_people: bool = False) -> Flask:
+def create_app(initial_path: str = "", force: bool = False, all_people: bool = False,
+               ml_dataset_path: str = "") -> Flask:
     app = Flask(__name__)
     app.config["review_state"] = None
     app.config["start_stage"] = None     # str while starting, None otherwise
@@ -262,6 +263,15 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
     app.config["force"] = force
     app.config["all_people"] = all_people
     app.config["ml_dataset"] = None      # TrainingDataset | None, persists across sessions
+
+    if ml_dataset_path:
+        try:
+            app.config["ml_dataset"] = TrainingDataset.load(ml_dataset_path)
+            n = len(app.config["ml_dataset"].records)
+            print(f"Loaded ML dataset: {n} records from {ml_dataset_path}")
+            _ensure_ml_models_loaded()
+        except Exception as e:
+            print(f"Warning: could not load ML dataset from {ml_dataset_path}: {e}")
 
     @app.route("/")
     def index():
@@ -506,6 +516,13 @@ def web_main():
         default=5001,
         help="Port to run the web server on (default: 5001)",
     )
+    parser.add_argument(
+        "--ml-dataset", "-m",
+        type=str,
+        default="",
+        metavar="DATASET",
+        help="Path to a training dataset .pkl file to pre-load for ML crop mode",
+    )
 
     args = parser.parse_args()
 
@@ -516,9 +533,17 @@ def web_main():
             raise SystemExit(f"Path does not exist: {root}")
         initial_path = str(root)
 
+    ml_dataset_path = ""
+    if args.ml_dataset:
+        p = Path(args.ml_dataset).expanduser().resolve()
+        if not p.exists():
+            raise SystemExit(f"ML dataset not found: {p}")
+        ml_dataset_path = str(p)
+
     threading.Thread(target=_load_models_thread, daemon=True).start()
 
-    app = create_app(initial_path=initial_path, force=args.force, all_people=args.all_people)
+    app = create_app(initial_path=initial_path, force=args.force, all_people=args.all_people,
+                     ml_dataset_path=ml_dataset_path)
 
     url = f"http://localhost:{args.port}"
     print(f"Starting review UI at {url} (use --port to change)")
