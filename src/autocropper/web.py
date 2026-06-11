@@ -434,6 +434,11 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                     _models_ready.wait()
 
                 dataset = app.config.get("ml_dataset")
+                if dataset is not None and not _ml_models_ready.is_set() and _ml_models_loading:
+                    print("  Waiting for ML models to finish loading...")
+                    app.config["start_stage"] = "Loading ML models..."
+                    _notify_sse()
+                    _ml_models_ready.wait(timeout=120)
                 use_ml = dataset is not None and _ml_models_ready.is_set()
                 mode_str = "ML" if use_ml else "classic"
                 print(f"  Starting review session: {len(to_review)} photos to review, mode={mode_str}, prefetch={PREFETCH_DEFAULT}")
