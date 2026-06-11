@@ -161,20 +161,21 @@ def _mask_bbox(mask):
 
 # ---- Feature extraction ----
 
-def extract_features(image, models, name=None):
+def extract_features(image, models, name=None, verbose=True):
     """Extract features from an image for ML crop matching.
 
     Returns a 4-tuple (mask_cropped, face_centroid, aspect_ratio, mask_bbox) or None.
 
     mask_cropped:  bool np.ndarray cropped to the mask bounding box in display pixels
-    face_centroid: (x, y) normalised within mask bbox [0, 1]
+    face_centroid: (x, y) normalised within mask bbox [0, 1], or None if no face found
     aspect_ratio:  image display width / height
     mask_bbox:     (mx1, my1, mx2, my2) in full-image display pixels
 
-    Returns None if the image cannot be processed (not exactly 1 person,
-    face not detected, empty mask).
+    Returns None if the image cannot be processed (no person detected, SAM failure,
+    or empty mask). Returns face_centroid=None when face keypoints are absent.
 
-    name: optional filename used in warning messages.
+    name:    optional filename used in warning messages.
+    verbose: if False, suppresses per-image timing output (set False when building dataset).
     """
     from .main import detect_people_with_masks
     label = f" [{name}]" if name else ""
@@ -229,14 +230,16 @@ def extract_features(image, models, name=None):
         print(f"{_YELLOW}  ViTPose (face keypoint detection){label}: no poses returned{_RESET}")
         return None
 
-    print(f"{_DIM}    gdino={t1-t0:.2f}s  sam={t2-t1:.2f}s  vitpose={t3-t2:.2f}s{label}{_RESET}")
+    if verbose:
+        print(f"{_DIM}    gdino={t1-t0:.2f}s  sam={t2-t1:.2f}s  vitpose={t3-t2:.2f}s{label}{_RESET}")
 
     mask_cropped = full_mask[my1:my2 + 1, mx1:mx2 + 1]
     ar = float(w) / float(h)
 
     face_indices = [i for i in FACE_KP_INDICES if scores[i] > FACE_KP_THRESHOLD]
     if not face_indices:
-        print(f"{_YELLOW}  ViTPose (face keypoint detection){label}: no face keypoints above confidence threshold — mask-only similarity will be used{_RESET}")
+        if verbose:
+            print(f"{_YELLOW}  ViTPose (face keypoint detection){label}: no face keypoints above confidence threshold — mask-only similarity will be used{_RESET}")
         return mask_cropped, None, ar, (mx1, my1, mx2, my2)
 
     face_xy = kps[face_indices]
@@ -253,7 +256,7 @@ def build_training_record(image, crop_xyxy_display, models, name=None):
     name: optional filename used in warning messages.
     """
     image_inf, inf_scale = _resize_for_inference(image)
-    result = extract_features(image_inf, models, name=name)
+    result = extract_features(image_inf, models, name=name, verbose=False)
     if result is None:
         return None
     mask_cropped, face_centroid, aspect_ratio, (mx1, my1, mx2, my2) = result
