@@ -471,8 +471,30 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
 
         if state is not None:
             with state._lock:
+                old_mode = state.ml_mode
                 state.ml_mode = enabled
                 state.ml_dataset = dataset if enabled else None
+                current = state.current
+                margin = state.margin
+
+            if old_mode != enabled and current is not None:
+                def _recompute_current(cr3=current["cr3_path"], margin=margin):
+                    if enabled:
+                        new_result = predict_ml_crop(cr3, dataset, _ml_models,
+                                                     _inference_lock=state._inference_lock)
+                    else:
+                        new_result = compute_crop(state.models, cr3, state.all_people,
+                                                  _inference_lock=state._inference_lock,
+                                                  margin_ratio=margin)
+                    if new_result is None:
+                        return
+                    if not new_result.get("ml_crop"):
+                        recompute_crop(new_result, margin)
+                    with state._lock:
+                        if state.current is not None and state.current["cr3_path"] == cr3:
+                            state.current = new_result
+                threading.Thread(target=_recompute_current, daemon=True).start()
+
         return jsonify({"ok": True, "ml_mode": enabled})
 
     @app.route("/api/set-prefetch", methods=["POST"])
@@ -539,6 +561,11 @@ def web_main():
         if not p.exists():
             raise SystemExit(f"ML dataset not found: {p}")
         ml_dataset_path = str(p)
+    else:
+        candidates = sorted(Path("data").glob("*.pkl")) if Path("data").is_dir() else []
+        if candidates:
+            ml_dataset_path = str(candidates[0])
+            print(f"Auto-detected ML dataset: {ml_dataset_path}")
 
     threading.Thread(target=_load_models_thread, daemon=True).start()
 
