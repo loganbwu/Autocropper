@@ -169,6 +169,7 @@ def extract_features(image, models, name=None):
     boxes, _, w, h = detect_people_with_masks((gdino_processor, gdino_model), image)
     t1 = time.perf_counter()
     if len(boxes) != 1:
+        print(f"  GDINO (person detection){label}: found {len(boxes)} {'people' if len(boxes) != 1 else 'person'} (need exactly 1)")
         return None
 
     bbox = boxes[0]  # [x1, y1, x2, y2]
@@ -345,6 +346,7 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
 
     candidates, masks_small, face_centroids_arr = _get_ar_candidates(dataset, query_ar)
     if len(candidates) < n:
+        print(f"  ML [{cr3_path.name}]: only {len(candidates)} training records match this aspect ratio (need {n})")
         return None
 
     # Vectorised distance computation — no Python loop over training records.
