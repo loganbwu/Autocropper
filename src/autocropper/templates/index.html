@@ -382,10 +382,14 @@
 
     const stats = document.createElement('div');
     stats.id = 'stats';
+    const autoSkipLine = data.auto_skipped > 0
+      ? `<div>No person / no-op crop: <span>${data.auto_skipped}</span></div>` : '';
+    const preSkipLine = data.pre_skipped > 0
+      ? `<div>Already reviewed: <span>${data.pre_skipped}</span></div>` : '';
     stats.innerHTML = `
       <div>Crops applied: <span>${data.accepted}</span></div>
-      <div>Skipped: <span>${data.rejected}</span></div>
-      <div>Already reviewed / no person: <span>${data.skipped}</span></div>
+      <div>Kept original: <span>${data.rejected}</span></div>
+      ${autoSkipLine}${preSkipLine}
     `;
     overlay.appendChild(stats);
 

@@ -84,7 +84,9 @@ class ReviewState:
 
         self.accepted = 0
         self.rejected = 0
-        self.skipped = pre_skipped
+        self.pre_skipped = pre_skipped   # already-reviewed files excluded before this session
+        self.auto_skipped = 0            # skipped during this session (no person / no-op crop)
+        self.skipped = pre_skipped       # kept for backward compat: pre + auto
         self.producer_processed = 0
         self.margin = MARGIN_DEFAULT
         self.status = "loading"
@@ -147,6 +149,7 @@ class ReviewState:
                         print(f"  Warning: skipping {cr3.name} — {e}")
                         with self._lock:
                             self.skipped += 1
+                            self.auto_skipped += 1
                             self.producer_processed += 1
                         continue
 
@@ -154,6 +157,7 @@ class ReviewState:
                         self.producer_processed += 1
                         if result is None:
                             self.skipped += 1
+                            self.auto_skipped += 1
 
                     if result is None:
                         print(f"  No person: {cr3.name}")
@@ -218,18 +222,21 @@ class ReviewState:
     def get_state(self):
         with self._lock:
             done_count = self.accepted + self.rejected
+            # Include auto-skips in progress so the bar reflects true processing progress.
+            reviewed_count = done_count + self.auto_skipped
             if self.status == "done":
                 return {
                     "status": "done",
                     "accepted": self.accepted,
                     "rejected": self.rejected,
-                    "skipped": self.skipped,
+                    "pre_skipped": self.pre_skipped,
+                    "auto_skipped": self.auto_skipped,
                 }
             buffered = self._prefetch_q.qsize()
             if self.status == "loading" or self.current is None:
                 return {
                     "status": "loading",
-                    "idx": done_count,
+                    "idx": reviewed_count,
                     "producer_idx": self.producer_processed,
                     "total": self.total_eligible,
                     "buffered": buffered,
@@ -241,7 +248,7 @@ class ReviewState:
             return {
                 "status": "ready",
                 "filename": d["cr3_path"].name,
-                "idx": done_count + 1,
+                "idx": reviewed_count + 1,
                 "total": self.total_eligible,
                 "buffered": buffered,
                 "prefetch": self.prefetch,
