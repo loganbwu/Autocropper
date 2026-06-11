@@ -71,11 +71,32 @@
   let uiReady = false;
   let deciding = false;
   let currentPrefetch = 0;  // rebuilt from first state response
-  let _pollTimer = null;
+  let _es = null;
 
-  function schedulePoll(delay) {
-    clearTimeout(_pollTimer);
-    _pollTimer = setTimeout(poll, delay);
+  function connectSSE() {
+    if (_es) { _es.close(); _es = null; }
+    _es = new EventSource('/api/events');
+    _es.onmessage = (e) => {
+      try { handleState(JSON.parse(e.data)); } catch (_) {}
+    };
+    _es.onerror = () => {
+      // EventSource reconnects automatically; nothing to do here.
+    };
+  }
+
+  function handleState(data) {
+    if (data.status === 'error') {
+      showPicker();
+      document.getElementById('picker-error').textContent = data.message;
+      return;
+    }
+
+    syncMlUi(data);
+
+    if (data.status === 'starting') { showStarting(data.stage, data.progress); return; }
+    if (data.status === 'done')     { showDone(data); return; }
+    if (data.status === 'loading')  { showLoading(data); return; }
+    if (data.status === 'ready')    { showImage(data); return; }
   }
 
   // ── Folder picker ──────────────────────────────────────────
@@ -108,10 +129,11 @@
     });
 
     document.getElementById('screen-picker').classList.add('hidden');
-    poll();
+    connectSSE();
   }
 
   function showPicker() {
+    if (_es) { _es.close(); _es = null; }
     document.getElementById('overlay').classList.add('hidden');
     document.getElementById('screen-picker').classList.remove('hidden');
     document.getElementById('btn-pick').disabled = false;
@@ -119,46 +141,6 @@
     document.getElementById('picker-error').textContent = '';
     uiReady = false;
     deciding = false;
-  }
-
-  // ── Review polling ─────────────────────────────────────────
-
-  async function poll() {
-    try {
-      const res = await fetch('/api/state');
-      const data = await res.json();
-
-      if (data.status === 'error') {
-        showPicker();
-        document.getElementById('picker-error').textContent = data.message;
-        return;
-      }
-
-      syncMlUi(data);
-
-      if (data.status === 'starting') {
-        showStarting(data.stage, data.progress);
-        schedulePoll(data.progress != null ? 100 : 200);
-        return;
-      }
-
-      if (data.status === 'done') {
-        showDone(data);
-        return;
-      }
-
-      if (data.status === 'loading') {
-        showLoading(data);
-        schedulePoll(200);
-        return;
-      }
-
-      // ready
-      showImage(data);
-      schedulePoll(500);
-    } catch (e) {
-      schedulePoll(500);
-    }
   }
 
   function showStarting(stage, progress) {
@@ -341,16 +323,7 @@
         toggle.disabled = !_mlModelsReady;
         if (!_mlModelsReady) {
           status.textContent = `${data.records} records — loading models...`;
-          // Poll until ML models ready
-          const pollModels = setInterval(async () => {
-            const r = await fetch('/api/state');
-            const d = await r.json();
-            if (d.ml_models_ready) {
-              clearInterval(pollModels);
-              status.textContent = `${data.records} records`;
-              toggle.disabled = false;
-            }
-          }, 2000);
+          // SSE will push an event when models finish loading; syncMlUi() updates the toggle.
         }
       }
     } catch (e) {
@@ -425,7 +398,7 @@
     });
 
     uiReady = false;
-    schedulePoll(100);
+    // No polling needed — SSE will push the next state when the consumer is ready.
   }
 
   document.addEventListener('keydown', (e) => {
@@ -438,8 +411,11 @@
   if (INITIAL_PATH) {
     document.getElementById('screen-picker').classList.add('hidden');
     startWithPath(INITIAL_PATH);
+  } else {
+    // No initial path — open SSE so the UI can react to model-ready events while
+    // sitting on the picker screen (e.g. the ML toggle becomes enabled).
+    connectSSE();
   }
-  // Otherwise the picker screen is visible and waiting for user interaction
 </script>
 </body>
 </html>

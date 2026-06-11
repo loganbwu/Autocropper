@@ -4,6 +4,7 @@ import argparse
 import base64
 import collections
 import itertools
+import json
 import queue
 import subprocess
 import threading
@@ -11,7 +12,7 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
 from .main import (
     compute_crop,
@@ -33,6 +34,15 @@ PROCESSING_WORKERS = 4  # parallel exiftool + file-read threads; inference is st
 MARGIN_DEFAULT = 0.20
 MARGIN_MIN = 0.00
 MARGIN_MAX = 0.50
+
+# SSE: woken whenever any server-side state changes that the browser should see.
+_sse_condition = threading.Condition()
+
+
+def _notify_sse():
+    with _sse_condition:
+        _sse_condition.notify_all()
+
 
 # Standard models load eagerly in background
 _models = None
@@ -71,12 +81,14 @@ def _ensure_ml_models_loaded():
             _ml_models = load_ml_models(gdino_models=_models)
             print("ML models ready.")
             _ml_models_ready.set()
+            _notify_sse()
         except Exception as e:
             print(f"ERROR: failed to load ML models: {e}")
             import traceback; traceback.print_exc()
             with _ml_models_lock:
                 _ml_models_error = str(e)
                 _ml_models_loading = False  # allow retry
+            _notify_sse()
 
     threading.Thread(target=_load, daemon=True).start()
 
@@ -164,6 +176,7 @@ class ReviewState:
                             self.skipped += 1
                             self.no_person_skipped += 1
                             self.producer_processed += 1
+                        _notify_sse()
                         continue
 
                     # Exit after waiting for result if gen changed while we were blocked.
@@ -178,6 +191,7 @@ class ReviewState:
                         elif result is False:
                             self.skipped += 1
                             self.noop_skipped += 1
+                    _notify_sse()
 
                     if result is None:
                         print(f"  No person: {cr3.name}")
@@ -212,6 +226,7 @@ class ReviewState:
             if result is None:
                 with self._lock:
                     self.status = "done"
+                _notify_sse()
                 print(f"Session complete — cropped: {self.accepted}, skipped: {self.rejected}, no person/already done: {self.skipped}")
                 return
 
@@ -220,6 +235,7 @@ class ReviewState:
                     recompute_crop(result, self.margin)
                 self.current = result
                 self.status = "ready"
+            _notify_sse()
 
             choice = self._decision_q.get()
 
@@ -243,6 +259,7 @@ class ReviewState:
                     print(f"  Declined:  {d['cr3_path'].name}")
                 self.current = None
                 self.status = "loading"
+            _notify_sse()
 
     def decide(self, choice):
         """Called from Flask request handler. choice: 'crop' | 'skip'."""
@@ -360,11 +377,13 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 if not files:
                     app.config["start_error"] = "No CR3 files found in that folder"
                     print("  No CR3 files found.")
+                    _notify_sse()
                     return
 
                 n = len(files)
                 print(f"  Found {n} CR3 files. Checking review status...")
                 app.config["start_stage"] = f"Scanning {n} files..."
+                _notify_sse()
 
                 # Use mtime for ordering (instant stat, no 12 MB header reads).
                 # has_been_reviewed reads a small XMP sidecar — keep in parallel.
@@ -392,10 +411,12 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 if not _models_ready.is_set():
                     print("  Waiting for AI model to finish loading...")
                     app.config["start_stage"] = "Loading AI model..."
+                    _notify_sse()
                     _models_ready.wait()
 
                 print(f"  Starting review session: {len(to_review)} photos to review, prefetch={PREFETCH_DEFAULT}")
                 app.config["start_stage"] = f"Preparing {n} photos..."
+                _notify_sse()
                 app.config["review_state"] = ReviewState(
                     to_review, _models,
                     pre_skipped=len(already_reviewed),
@@ -406,6 +427,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 print(f"  Error during startup: {e}")
             finally:
                 app.config["start_stage"] = None
+                _notify_sse()
 
         threading.Thread(target=_do_start, daemon=True).start()
         return jsonify({"ok": True})
@@ -551,8 +573,40 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                     args=(remaining, new_gen),
                     daemon=True,
                 ).start()
+                _notify_sse()
 
         return jsonify({"ok": True, "ml_mode": enabled})
+
+    @app.route("/api/events")
+    def api_events():
+        def get_snapshot():
+            error = app.config.get("start_error")
+            if error:
+                app.config["start_error"] = None
+                return {"status": "error", "message": error}
+            stage = app.config.get("start_stage")
+            if stage is not None:
+                return {"status": "starting", "stage": stage,
+                        "progress": app.config.get("start_progress"),
+                        **_ml_info()}
+            state = app.config["review_state"]
+            if state is None:
+                return {"status": "waiting", "models_ready": _models_ready.is_set(),
+                        **_ml_info()}
+            return {**state.get_state(), **_ml_info()}
+
+        def generate():
+            yield f"data: {json.dumps(get_snapshot())}\n\n"
+            while True:
+                with _sse_condition:
+                    _sse_condition.wait(timeout=25)
+                yield f"data: {json.dumps(get_snapshot())}\n\n"
+
+        return Response(
+            stream_with_context(generate()),
+            content_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.route("/api/set-prefetch", methods=["POST"])
     def api_set_prefetch():
