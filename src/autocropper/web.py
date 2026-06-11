@@ -67,7 +67,8 @@ def _ensure_ml_models_loaded():
         global _ml_models, _ml_models_loading, _ml_models_error
         print("Loading ML models (SAM + ViTPose) in background...")
         try:
-            _ml_models = load_ml_models()
+            _models_ready.wait()  # ensure base GDINO is loaded before we borrow it
+            _ml_models = load_ml_models(gdino_models=_models)
             print("ML models ready.")
             _ml_models_ready.set()
         except Exception as e:

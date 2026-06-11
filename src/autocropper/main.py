@@ -104,12 +104,15 @@ def load_models():
     return gdino_processor, gdino_model
 
 
-def load_ml_models():
-    """Load all models needed for ML crop mode: Grounding DINO + SAM + ViTPose."""
+def load_ml_models(gdino_models=None):
+    """Load SAM + ViTPose; reuse an existing GDINO pair if supplied."""
     from transformers.models.sam import SamProcessor, SamModel
     from transformers import AutoProcessor, VitPoseForPoseEstimation
 
-    gdino_processor, gdino_model = load_models()
+    if gdino_models is not None:
+        gdino_processor, gdino_model = gdino_models
+    else:
+        gdino_processor, gdino_model = load_models()
     device = _get_device()
 
     SAM_MODEL = "facebook/sam-vit-base"
