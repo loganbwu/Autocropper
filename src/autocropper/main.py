@@ -49,19 +49,18 @@ def load_models():
 
     print(f"Loading models on {device}...")
 
-    load_kw = {"low_cpu_mem_usage": False}  # disable meta tensors so .to(device) works without accelerate
-    kwargs = {"local_files_only": True, **load_kw}
+    kwargs = {"local_files_only": True}
     try:
         gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True, **kwargs)
         gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-            GDINO_MODEL, **kwargs
-        ).to(device).eval()
+            GDINO_MODEL, device_map=device, **kwargs
+        ).eval()
     except Exception:
         # Not cached yet — download and cache
         gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True)
         gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-            GDINO_MODEL, **load_kw
-        ).to(device).eval()
+            GDINO_MODEL, device_map=device
+        ).eval()
 
     return gdino_processor, gdino_model
 
@@ -83,18 +82,17 @@ def load_ml_models():
     SAM_MODEL = "facebook/sam-vit-base"
     VITPOSE_MODEL = "usyd-community/vitpose-base-simple"
 
-    load_kw = {"low_cpu_mem_usage": False}
-    kwargs = {"local_files_only": True, **load_kw}
+    kwargs = {"local_files_only": True}
     try:
         sam_processor = SamProcessor.from_pretrained(SAM_MODEL, **kwargs)
-        sam_model = SamModel.from_pretrained(SAM_MODEL, **kwargs).to(device).eval()
+        sam_model = SamModel.from_pretrained(SAM_MODEL, device_map=device, **kwargs).eval()
         vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL, **kwargs)
-        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, **kwargs).to(device).eval()
+        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, device_map=device, **kwargs).eval()
     except Exception:
         sam_processor = SamProcessor.from_pretrained(SAM_MODEL)
-        sam_model = SamModel.from_pretrained(SAM_MODEL, **load_kw).to(device).eval()
+        sam_model = SamModel.from_pretrained(SAM_MODEL, device_map=device).eval()
         vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL)
-        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, **load_kw).to(device).eval()
+        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, device_map=device).eval()
 
     print("ML models (SAM + ViTPose) loaded.")
     return gdino_processor, gdino_model, sam_processor, sam_model, vitpose_processor, vitpose_model
@@ -102,7 +100,8 @@ def load_ml_models():
 
 def detect_people_with_masks(models, image: Image.Image):
     gdino_processor, gdino_model = models
-    device = next(gdino_model.parameters()).device
+    param = next(gdino_model.parameters())
+    device = param.device if param.device.type != "meta" else torch.device("cpu")
 
     w, h = image.size
 
