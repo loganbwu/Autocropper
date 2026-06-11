@@ -8,6 +8,7 @@ Workflow:
 
 import io
 import pickle
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from PIL import Image
 FACE_KP_INDICES = [0, 1, 2, 3, 4]   # COCO: nose, left_eye, right_eye, left_ear, right_ear
 FACE_KP_THRESHOLD = 0.3
 MASK_SIZE = 1024
+KNN_COMPARE_SIZE = 64                 # masks are downsampled to this resolution for k-NN comparison
 AR_EPSILON = 0.05                     # aspect-ratio tolerance for similarity matching
 DEFAULT_N_NEIGHBORS = 10
 
@@ -149,13 +151,16 @@ def extract_features(image, models):
 
     device = next(gdino_model.parameters()).device
 
+    t0 = time.perf_counter()
     boxes, _, w, h = detect_people_with_masks((gdino_processor, gdino_model), image)
+    t1 = time.perf_counter()
     if len(boxes) != 1:
         return None
 
     bbox = boxes[0]  # [x1, y1, x2, y2]
 
     full_mask = _run_sam(image, bbox, sam_processor, sam_model, device)
+    t2 = time.perf_counter()
     bbox_mask = _mask_bbox(full_mask)
     if bbox_mask is None:
         return None
@@ -166,8 +171,11 @@ def extract_features(image, models):
         return None
 
     kps, scores = _run_vitpose(image, bbox, vitpose_processor, vitpose_model, device)
+    t3 = time.perf_counter()
     if kps is None:
         return None
+
+    print(f"    gdino={t1-t0:.2f}s  sam={t2-t1:.2f}s  vitpose={t3-t2:.2f}s")
 
     face_indices = [i for i in FACE_KP_INDICES if scores[i] > FACE_KP_THRESHOLD]
     if not face_indices:
@@ -245,6 +253,29 @@ def _face_dist(c1, c2):
     return float(np.sqrt((c1[0] - c2[0]) ** 2 + (c1[1] - c2[1]) ** 2))
 
 
+# ---- k-NN helpers ----
+
+def _get_ar_candidates(dataset, query_ar):
+    """Return (candidates, masks_small, face_centroids) for query_ar, cached on the dataset."""
+    if not hasattr(dataset, '_ar_cache'):
+        dataset._ar_cache = {}
+    # Round to nearest AR_EPSILON so photos with the same AR share a cache entry.
+    ar_key = round(query_ar / AR_EPSILON) * AR_EPSILON
+    if ar_key not in dataset._ar_cache:
+        candidates = [r for r in dataset.records if abs(r.aspect_ratio - query_ar) <= AR_EPSILON]
+        step = MASK_SIZE // KNN_COMPARE_SIZE
+        if candidates:
+            # Precompute stacked downsampled masks — one-time cost, reused for every photo with this AR.
+            masks_small = np.stack([r.mask[::step, ::step] for r in candidates])
+            face_centroids = np.array([r.face_centroid for r in candidates], dtype=np.float32)
+        else:
+            masks_small = np.empty((0, KNN_COMPARE_SIZE, KNN_COMPARE_SIZE), dtype=bool)
+            face_centroids = np.empty((0, 2), dtype=np.float32)
+        dataset._ar_cache[ar_key] = (candidates, masks_small, face_centroids)
+        print(f"  k-NN cache built for AR≈{ar_key:.2f}: {len(candidates)} candidates, masks_small={masks_small.nbytes // 1024}KB")
+    return dataset._ar_cache[ar_key]
+
+
 # ---- Prediction ----
 
 def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference_lock=None):
@@ -259,37 +290,43 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
         get_orientation, limit_zoom,
     )
 
+    t_start = time.perf_counter()
+
     orientation = get_orientation(cr3_path)
     image = apply_orientation(extract_preview_image(cr3_path), orientation)
     w_img, h_img = image.size
+    t_io = time.perf_counter()
 
     lock_ctx = _inference_lock if _inference_lock is not None else contextlib.nullcontext()
     with lock_ctx:
         result = extract_features(image, models)
+    t_inf = time.perf_counter()
     if result is None:
         return None
 
     query_mask, query_fc, query_ar, (mx1, my1, mx2, my2) = result
     query_norm = _normalize_mask(query_mask)
 
-    candidates = [
-        r for r in dataset.records
-        if abs(r.aspect_ratio - query_ar) <= AR_EPSILON
-    ]
+    candidates, masks_small, face_centroids_arr = _get_ar_candidates(dataset, query_ar)
     if len(candidates) < n:
         return None
 
-    alpha = dataset.alpha
-    distances = []
-    for r in candidates:
-        train_norm = _normalize_mask(r.mask)
-        iou = _mask_iou(query_norm, train_norm)
-        fd = _face_dist(query_fc, r.face_centroid)
-        dist = alpha * (1.0 - iou) + (1.0 - alpha) * fd
-        distances.append((dist, r))
+    # Vectorised distance computation — no Python loop over training records.
+    step = MASK_SIZE // KNN_COMPARE_SIZE
+    q_small = query_norm[::step, ::step]  # strided view, no copy
+    intersections = (masks_small & q_small).sum(axis=(1, 2)).astype(np.float32)
+    ious = intersections / (q_small.shape[0] * q_small.shape[1])
 
-    distances.sort(key=lambda x: x[0])
-    neighbors = [r for _, r in distances[:n]]
+    qfc_arr = np.array(query_fc, dtype=np.float32)
+    face_dists = np.sqrt(((face_centroids_arr - qfc_arr) ** 2).sum(axis=1))
+
+    dists = dataset.alpha * (1.0 - ious) + (1.0 - dataset.alpha) * face_dists
+
+    top_idx = np.argpartition(dists, n)[:n]
+    neighbors = [candidates[i] for i in top_idx]
+    t_knn = time.perf_counter()
+
+    print(f"  ML timing [{cr3_path.name}]: io={t_io-t_start:.2f}s  inference={t_inf-t_io:.2f}s  knn(n={len(candidates)})={t_knn-t_inf:.2f}s  total={t_knn-t_start:.2f}s")
 
     pred_cc_x = float(np.mean([r.crop_center[0] for r in neighbors]))
     pred_cc_y = float(np.mean([r.crop_center[1] for r in neighbors]))
