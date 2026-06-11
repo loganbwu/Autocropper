@@ -138,7 +138,7 @@
 
       if (data.status === 'starting') {
         showStarting(data.stage, data.progress);
-        schedulePoll(data.progress != null ? 250 : 600);
+        schedulePoll(data.progress != null ? 100 : 200);
         return;
       }
 
@@ -149,15 +149,15 @@
 
       if (data.status === 'loading') {
         showLoading(data);
-        schedulePoll(600);
+        schedulePoll(200);
         return;
       }
 
       // ready
       showImage(data);
-      schedulePoll(2000);
+      schedulePoll(500);
     } catch (e) {
-      schedulePoll(1000);
+      schedulePoll(500);
     }
   }
 
