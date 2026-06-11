@@ -115,11 +115,14 @@ class ReviewState:
         self._decision_q = queue.Queue()
         self._lock = threading.Lock()
         self._inference_lock = threading.Lock()  # serialises GPU/MPS model calls across worker threads
+        self._producer_gen = 0  # incremented on mode switch; producer discards stale results
 
         threading.Thread(target=self._producer, daemon=True).start()
         threading.Thread(target=self._consumer, daemon=True).start()
 
     def _producer(self):
+        producer_gen = self._producer_gen  # capture at thread start
+
         def _process(cr3):
             with self._lock:
                 use_ml = self.ml_mode and self.ml_dataset is not None and _ml_models_ready.is_set()
@@ -160,6 +163,19 @@ class ReviewState:
                             self.skipped += 1
                             self.no_person_skipped += 1
                             self.producer_processed += 1
+                        continue
+
+                    # Mode switched while this future was in-flight: discard the stale
+                    # result and resume with the new mode.  _recompute has already taken
+                    # ownership of reprocessing the buffer items that were cleared during
+                    # the switch.  Up to PROCESSING_WORKERS in-flight files may be silently
+                    # skipped here; that is acceptable.
+                    current_gen = self._producer_gen
+                    if current_gen != producer_gen:
+                        producer_gen = current_gen
+                        with self._lock:
+                            self.producer_processed += 1
+                        print(f"  Mode switched, discarding stale result: {cr3.name}")
                         continue
 
                     with self._lock:
@@ -501,6 +517,9 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 current_item = state.current
                 margin = state.margin
                 if old_mode != enabled:
+                    # Bump the producer generation so any in-flight futures computed
+                    # with the old mode are discarded rather than landing in the queue.
+                    state._producer_gen += 1
                     # Hide the current image immediately so the old-mode crop
                     # cannot be decided on while recompute is in flight.
                     state.current = None
