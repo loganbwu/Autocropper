@@ -107,7 +107,8 @@ class ReviewState:
     """Producer/consumer design: producer pre-processes up to PREFETCH images ahead,
     consumer presents them and waits for decisions. The user rarely waits."""
 
-    def __init__(self, files, models, all_people=False, prefetch=PREFETCH_DEFAULT, pre_skipped=0):
+    def __init__(self, files, models, all_people=False, prefetch=PREFETCH_DEFAULT, pre_skipped=0,
+                 ml_mode=False, ml_dataset=None):
         self.files = files
         self.models = models
         self.all_people = all_people
@@ -125,8 +126,8 @@ class ReviewState:
         self.current = None
 
         # ML mode state
-        self.ml_mode = False
-        self.ml_dataset = None   # TrainingDataset | None
+        self.ml_mode = ml_mode
+        self.ml_dataset = ml_dataset   # TrainingDataset | None
 
         self.total_eligible = len(files)
 
@@ -432,13 +433,18 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                     _notify_sse()
                     _models_ready.wait()
 
-                print(f"  Starting review session: {len(to_review)} photos to review, prefetch={PREFETCH_DEFAULT}")
+                dataset = app.config.get("ml_dataset")
+                use_ml = dataset is not None and _ml_models_ready.is_set()
+                mode_str = "ML" if use_ml else "classic"
+                print(f"  Starting review session: {len(to_review)} photos to review, mode={mode_str}, prefetch={PREFETCH_DEFAULT}")
                 app.config["start_stage"] = f"Preparing {n} photos..."
                 _notify_sse()
                 app.config["review_state"] = ReviewState(
                     to_review, _models,
                     pre_skipped=len(already_reviewed),
                     all_people=app.config["all_people"],
+                    ml_mode=use_ml,
+                    ml_dataset=dataset if use_ml else None,
                 )
             except Exception as e:
                 app.config["start_error"] = str(e)
