@@ -53,15 +53,14 @@ def load_models():
     try:
         gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True, **kwargs)
         gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-            GDINO_MODEL, dtype=torch.float16, **kwargs
-        ).to(device).eval()
+            GDINO_MODEL, dtype=torch.float16, device_map=device, **kwargs
+        ).eval()
     except Exception:
         # Not cached yet — download and cache
-        kwargs = {}
         gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True)
         gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-            GDINO_MODEL, dtype=torch.float16
-        ).to(device).eval()
+            GDINO_MODEL, dtype=torch.float16, device_map=device
+        ).eval()
 
     return gdino_processor, gdino_model
 
@@ -86,14 +85,14 @@ def load_ml_models():
     kwargs = {"local_files_only": True}
     try:
         sam_processor = SamProcessor.from_pretrained(SAM_MODEL, **kwargs)
-        sam_model = SamModel.from_pretrained(SAM_MODEL, **kwargs).to(device).eval()
+        sam_model = SamModel.from_pretrained(SAM_MODEL, device_map=device, **kwargs).eval()
         vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL, **kwargs)
-        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, **kwargs).to(device).eval()
+        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, device_map=device, **kwargs).eval()
     except Exception:
         sam_processor = SamProcessor.from_pretrained(SAM_MODEL)
-        sam_model = SamModel.from_pretrained(SAM_MODEL).to(device).eval()
+        sam_model = SamModel.from_pretrained(SAM_MODEL, device_map=device).eval()
         vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL)
-        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL).to(device).eval()
+        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, device_map=device).eval()
 
     print("ML models (SAM + ViTPose) loaded.")
     return gdino_processor, gdino_model, sam_processor, sam_model, vitpose_processor, vitpose_model
