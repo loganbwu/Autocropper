@@ -216,7 +216,7 @@ def extract_features(image, models, name=None):
         print(f"{_YELLOW}  ViTPose (face keypoint detection){label}: no poses returned{_RESET}")
         return None
 
-    print(f"{_DIM}    gdino={t1-t0:.2f}s  sam={t2-t1:.2f}s  vitpose={t3-t2:.2f}s{_RESET}")
+    print(f"{_DIM}    gdino={t1-t0:.2f}s  sam={t2-t1:.2f}s  vitpose={t3-t2:.2f}s{label}{_RESET}")
 
     face_indices = [i for i in FACE_KP_INDICES if scores[i] > FACE_KP_THRESHOLD]
     if not face_indices:
@@ -344,9 +344,13 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
     t_io = time.perf_counter()
 
     lock_ctx = _inference_lock if _inference_lock is not None else contextlib.nullcontext()
+    t_lock_start = time.perf_counter()
     with lock_ctx:
+        t_models_start = time.perf_counter()
         result = extract_features(image_inf, models, name=cr3_path.name)
     t_inf = time.perf_counter()
+    t_lock_wait = t_models_start - t_lock_start
+    t_models = t_inf - t_models_start
     if result is None:
         return None
 
@@ -379,7 +383,7 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
     neighbors = [candidates[i] for i in top_idx]
     t_knn = time.perf_counter()
 
-    print(f"{_DIM}  ML timing [{cr3_path.name}]: io={t_io-t_start:.2f}s  inference={t_inf-t_io:.2f}s  knn(n={len(candidates)})={t_knn-t_inf:.2f}s  total={t_knn-t_start:.2f}s{_RESET}")
+    print(f"{_DIM}  ML timing [{cr3_path.name}]: io={t_io-t_start:.2f}s  lock_wait={t_lock_wait:.2f}s  models={t_models:.2f}s  knn(n={len(candidates)})={t_knn-t_inf:.2f}s  total={t_knn-t_start:.2f}s{_RESET}")
 
     pred_cc_x = float(np.mean([r.crop_center[0] for r in neighbors]))
     pred_cc_y = float(np.mean([r.crop_center[1] for r in neighbors]))
