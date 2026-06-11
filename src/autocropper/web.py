@@ -512,23 +512,48 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 current = state.current
                 margin = state.margin
 
-            if old_mode != enabled and current is not None:
-                def _recompute_current(cr3=current["cr3_path"], margin=margin):
-                    if enabled:
-                        new_result = predict_ml_crop(cr3, dataset, _ml_models,
-                                                     _inference_lock=state._inference_lock)
-                    else:
-                        new_result = compute_crop(state.models, cr3, state.all_people,
-                                                  _inference_lock=state._inference_lock,
-                                                  margin_ratio=margin)
-                    if new_result is None:
-                        return
-                    if not new_result.get("ml_crop"):
-                        recompute_crop(new_result, margin)
-                    with state._lock:
-                        if state.current is not None and state.current["cr3_path"] == cr3:
-                            state.current = new_result
-                threading.Thread(target=_recompute_current, daemon=True).start()
+            if old_mode != enabled:
+                def _recompute(current=current, margin=margin):
+                    # Recompute currently-displayed image first (most urgent).
+                    if current is not None:
+                        cr3 = current["cr3_path"]
+                        if enabled:
+                            new_result = predict_ml_crop(cr3, dataset, _ml_models,
+                                                         _inference_lock=state._inference_lock)
+                        else:
+                            new_result = compute_crop(state.models, cr3, state.all_people,
+                                                      _inference_lock=state._inference_lock,
+                                                      margin_ratio=margin)
+                        if new_result is not None:
+                            if not new_result.get("ml_crop"):
+                                recompute_crop(new_result, margin)
+                            with state._lock:
+                                if state.current is not None and state.current["cr3_path"] == cr3:
+                                    state.current = new_result
+
+                    # Reprocess buffered items in-place (front-to-back = most urgent first).
+                    # The queue holds dict references so updating them is visible to the consumer.
+                    for item in list(state._prefetch_q.queue):
+                        if item is None:
+                            continue
+                        cr3 = item["cr3_path"]
+                        try:
+                            if enabled:
+                                new = predict_ml_crop(cr3, dataset, _ml_models,
+                                                      _inference_lock=state._inference_lock)
+                            else:
+                                new = compute_crop(state.models, cr3, state.all_people,
+                                                   _inference_lock=state._inference_lock,
+                                                   margin_ratio=margin)
+                            if new is None:
+                                continue
+                            if not new.get("ml_crop"):
+                                recompute_crop(new, margin)
+                            item.update({k: v for k, v in new.items() if k != "cr3_path"})
+                        except Exception as e:
+                            print(f"  Warning: buffer reprocess failed for {cr3.name}: {e}")
+
+                threading.Thread(target=_recompute, daemon=True).start()
 
         return jsonify({"ok": True, "ml_mode": enabled})
 
