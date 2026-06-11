@@ -15,7 +15,6 @@ from flask import Flask, jsonify, render_template, request
 
 from .main import (
     compute_crop,
-    get_capture_time,
     has_been_reviewed,
     has_existing_crop,
     load_ml_models,
@@ -338,42 +337,23 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                     return
 
                 n = len(files)
-                print(f"  Found {n} CR3 files. Scanning...")
+                print(f"  Found {n} CR3 files. Checking review status...")
                 app.config["start_stage"] = f"Scanning {n} files..."
-                app.config["start_progress"] = 0.0
-                workers = min(8, n)
-                times_dict = {}
+
+                # Use mtime for ordering (instant stat, no 12 MB header reads).
+                # has_been_reviewed reads a small XMP sidecar — keep in parallel.
                 reviewed_set = set()
-
-                def _read_info(f):
-                    return get_capture_time(f), has_been_reviewed(f)
-
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures = {pool.submit(_read_info, f): f for f in files}
-                    for i, future in enumerate(as_completed(futures), 1):
+                with ThreadPoolExecutor(max_workers=min(8, n)) as pool:
+                    futures = {pool.submit(has_been_reviewed, f): f for f in files}
+                    for future in as_completed(futures):
                         f = futures[future]
                         try:
-                            t, reviewed = future.result()
+                            if future.result():
+                                reviewed_set.add(f)
                         except Exception:
-                            t, reviewed = '', False
-                        times_dict[f] = t
-                        if reviewed:
-                            reviewed_set.add(f)
-                        app.config["start_progress"] = i / n
-                times = [times_dict[f] for f in files]
-                app.config["start_progress"] = None
+                            pass
 
-                empty = sum(1 for t in times if not t)
-                if empty:
-                    print(f"  Warning: {empty}/{n} files had no readable timestamp")
-                else:
-                    print(f"  All {n} timestamps read successfully")
-                for name, t in [(f.name, t) for f, t in zip(files, times) if t][:3]:
-                    print(f"    {name} → {t}")
-
-                cr3_files = [
-                    f for _, f in sorted(zip(times, files), key=lambda x: (x[0], str(x[1])))
-                ]
+                cr3_files = sorted(files, key=lambda f: (f.stat().st_mtime, f.name))
 
                 force = app.config["force"]
                 already_reviewed = [f for f in cr3_files if not force and f in reviewed_set]
