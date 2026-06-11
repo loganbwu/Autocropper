@@ -351,7 +351,7 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
     x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w_img, h_img)
 
     if (x2 - x1) * (y2 - y1) / (w_img * h_img) > 0.96:
-        return None
+        return False  # noop — matches compute_crop() sentinel so producer counts it correctly
 
     orig_buf = io.BytesIO()
     image.save(orig_buf, format="JPEG", quality=85)
