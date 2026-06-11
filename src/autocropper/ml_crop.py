@@ -40,10 +40,11 @@ MAX_INFERENCE_SIZE = 800              # longest edge fed to models; SAM/GDINO re
 @dataclass
 class TrainingRecord:
     mask: np.ndarray        # bool (MASK_SIZE, MASK_SIZE) — pre-normalised
-    face_centroid: tuple    # (x, y) normalised within mask bbox [0, 1]
+    face_centroid: tuple    # (x, y) normalised within mask bbox [0, 1], or None
     crop_center: tuple      # (x, y) normalised within mask bbox [0, 1]
     min_margin: float       # min of 4 normalised margins (each normalised by mask dim)
     aspect_ratio: float     # image display width / height
+    source_path: str = ""   # absolute path to source image; empty for older records
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -250,11 +251,12 @@ def extract_features(image, models, name=None, verbose=True):
     return mask_cropped, (fc_x, fc_y), ar, (mx1, my1, mx2, my2)
 
 
-def build_training_record(image, crop_xyxy_display, models, name=None):
+def build_training_record(image, crop_xyxy_display, models, name=None, source_path=""):
     """Build one TrainingRecord from an image with its known crop in display pixels.
 
     Returns None if the image cannot be processed.
-    name: optional filename used in warning messages.
+    name:        optional filename used in warning messages.
+    source_path: absolute path to the source image, stored in the record.
     """
     image_inf, inf_scale = _resize_for_inference(image)
     result = extract_features(image_inf, models, name=name, verbose=False)
@@ -287,6 +289,7 @@ def build_training_record(image, crop_xyxy_display, models, name=None):
         crop_center=(cc_x, cc_y),
         min_margin=min_margin,
         aspect_ratio=aspect_ratio,
+        source_path=source_path,
     )
 
 
