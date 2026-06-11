@@ -46,19 +46,46 @@ def _get_device() -> str:
 
 
 def _load_pretrained(cls, model_id, device, local_only: bool, **kwargs):
-    """Load a transformers model without device_map to avoid meta-tensor issues.
+    """Load a transformers model, handling missing-checkpoint-key meta tensors.
 
-    device_map= with accelerate leaves missing checkpoint keys on the meta
-    device and can't be recovered with setattr.  Loading with
-    low_cpu_mem_usage=False initialises all params on CPU first (missing keys
-    keep their __init__ values), then .to(device) moves everything to MPS/GPU
-    without any meta tensors.
+    transformers 5.x leaves parameters absent from the checkpoint on the meta
+    device regardless of low_cpu_mem_usage.  We materialise those to zero CPU
+    tensors before calling .to(device) so PyTorch can copy them without raising
+    NotImplementedError.  No device_map is used, so there are no accelerate
+    dispatch hooks and setattr works reliably.
     """
     load_kw = dict(low_cpu_mem_usage=False, **kwargs)
     try:
         model = cls.from_pretrained(model_id, local_files_only=True, **load_kw)
     except Exception:
         model = cls.from_pretrained(model_id, **load_kw)
+
+    # Replace meta params/buffers with zero CPU tensors before the device transfer.
+    n_fixed = 0
+    for name, param in list(model.named_parameters()):
+        if not param.is_meta:
+            continue
+        *path, attr = name.split('.')
+        mod = model
+        for part in path:
+            mod = getattr(mod, part)
+        setattr(mod, attr, torch.nn.Parameter(
+            torch.zeros(param.shape, dtype=torch.float32),
+            requires_grad=param.requires_grad,
+        ))
+        n_fixed += 1
+    for name, buf in list(model.named_buffers()):
+        if not buf.is_meta:
+            continue
+        *path, attr = name.split('.')
+        mod = model
+        for part in path:
+            mod = getattr(mod, part)
+        mod.register_buffer(attr, torch.zeros(buf.shape, dtype=torch.float32))
+        n_fixed += 1
+    if n_fixed:
+        print(f"  Materialised {n_fixed} meta tensors (missing checkpoint keys) for {model_id}")
+
     return model.to(device).eval()
 
 
