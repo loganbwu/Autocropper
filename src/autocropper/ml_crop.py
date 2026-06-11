@@ -26,11 +26,24 @@ DEFAULT_N_NEIGHBORS = 10
 
 @dataclass
 class TrainingRecord:
-    mask: np.ndarray        # bool (H, W), cropped to the mask bounding box
+    mask: np.ndarray        # bool (MASK_SIZE, MASK_SIZE) — pre-normalised
     face_centroid: tuple    # (x, y) normalised within mask bbox [0, 1]
     crop_center: tuple      # (x, y) normalised within mask bbox [0, 1]
     min_margin: float       # min of 4 normalised margins (each normalised by mask dim)
     aspect_ratio: float     # image display width / height
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        mask = state.pop('mask')
+        state['_mask_packed'] = np.packbits(mask.flatten())
+        state['_mask_shape'] = mask.shape
+        return state
+
+    def __setstate__(self, state):
+        if '_mask_packed' in state:
+            h, w = state.pop('_mask_shape')
+            state['mask'] = np.unpackbits(state.pop('_mask_packed'), count=h * w).reshape(h, w).astype(bool)
+        self.__dict__.update(state)
 
 
 @dataclass
@@ -196,7 +209,7 @@ def build_training_record(image, crop_xyxy_display, models):
     min_margin = float(min(left_m, right_m, top_m, bottom_m))
 
     return TrainingRecord(
-        mask=mask_cropped,
+        mask=_normalize_mask(mask_cropped),
         face_centroid=face_centroid,
         crop_center=(cc_x, cc_y),
         min_margin=min_margin,
@@ -208,6 +221,8 @@ def build_training_record(image, crop_xyxy_display, models):
 
 def _normalize_mask(mask):
     """Scale mask to MASK_SIZE px on longest edge, centre-pad to MASK_SIZE×MASK_SIZE."""
+    if mask.shape == (MASK_SIZE, MASK_SIZE):
+        return mask
     h, w = mask.shape
     scale = MASK_SIZE / max(h, w)
     new_h = max(1, int(h * scale))
