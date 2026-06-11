@@ -231,17 +231,19 @@ def extract_features(image, models, name=None):
 
     print(f"{_DIM}    gdino={t1-t0:.2f}s  sam={t2-t1:.2f}s  vitpose={t3-t2:.2f}s{label}{_RESET}")
 
+    mask_cropped = full_mask[my1:my2 + 1, mx1:mx2 + 1]
+    ar = float(w) / float(h)
+
     face_indices = [i for i in FACE_KP_INDICES if scores[i] > FACE_KP_THRESHOLD]
     if not face_indices:
-        print(f"{_YELLOW}  ViTPose (face keypoint detection){label}: no face keypoints above confidence threshold — needed to centre the crop on the subject{_RESET}")
-        return None
+        print(f"{_YELLOW}  ViTPose (face keypoint detection){label}: no face keypoints above confidence threshold — mask-only similarity will be used{_RESET}")
+        return mask_cropped, None, ar, (mx1, my1, mx2, my2)
 
     face_xy = kps[face_indices]
     fc_x = float((np.mean(face_xy[:, 0]) - mx1) / mask_w)
     fc_y = float((np.mean(face_xy[:, 1]) - my1) / mask_h)
 
-    mask_cropped = full_mask[my1:my2 + 1, mx1:mx2 + 1]
-    return mask_cropped, (fc_x, fc_y), float(w) / float(h), (mx1, my1, mx2, my2)
+    return mask_cropped, (fc_x, fc_y), ar, (mx1, my1, mx2, my2)
 
 
 def build_training_record(image, crop_xyxy_display, models, name=None):
@@ -254,8 +256,9 @@ def build_training_record(image, crop_xyxy_display, models, name=None):
     result = extract_features(image_inf, models, name=name)
     if result is None:
         return None
-
     mask_cropped, face_centroid, aspect_ratio, (mx1, my1, mx2, my2) = result
+    if face_centroid is None:
+        return None  # training records require a face centroid
     # Scale crop coordinates to inference resolution so all values are in the same space.
     crop_x1, crop_y1, crop_x2, crop_y2 = (c * inf_scale for c in crop_xyxy_display)
 
@@ -387,10 +390,13 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
     intersections = (masks_small & q_small).sum(axis=(1, 2)).astype(np.float32)
     ious = intersections / (q_small.shape[0] * q_small.shape[1])
 
-    qfc_arr = np.array(query_fc, dtype=np.float32)
-    face_dists = np.sqrt(((face_centroids_arr - qfc_arr) ** 2).sum(axis=1))
-
-    dists = dataset.alpha * (1.0 - ious) + (1.0 - dataset.alpha) * face_dists
+    if query_fc is None:
+        # No face detected — compare on mask shape only
+        dists = 1.0 - ious
+    else:
+        qfc_arr = np.array(query_fc, dtype=np.float32)
+        face_dists = np.sqrt(((face_centroids_arr - qfc_arr) ** 2).sum(axis=1))
+        dists = dataset.alpha * (1.0 - ious) + (1.0 - dataset.alpha) * face_dists
 
     top_idx = np.argpartition(dists, n)[:n]
     neighbors = [candidates[i] for i in top_idx]
