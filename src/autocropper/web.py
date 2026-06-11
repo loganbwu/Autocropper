@@ -234,6 +234,8 @@ class ReviewState:
                     "total": self.total_eligible,
                     "buffered": buffered,
                     "prefetch": self.prefetch,
+                    "ml_mode": self.ml_mode,
+                    "ml_dataset_loaded": self.ml_dataset is not None,
                 }
             d = self.current
             return {
@@ -263,12 +265,16 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
     app.config["force"] = force
     app.config["all_people"] = all_people
     app.config["ml_dataset"] = None      # TrainingDataset | None, persists across sessions
+    app.config["ml_dataset_name"] = ""   # filename stem shown in the UI
+    app.config["ml_dataset_records"] = 0
 
     if ml_dataset_path:
         try:
-            app.config["ml_dataset"] = TrainingDataset.load(ml_dataset_path)
-            n = len(app.config["ml_dataset"].records)
-            print(f"Loaded ML dataset: {n} records from {ml_dataset_path}")
+            ds = TrainingDataset.load(ml_dataset_path)
+            app.config["ml_dataset"] = ds
+            app.config["ml_dataset_name"] = Path(ml_dataset_path).name
+            app.config["ml_dataset_records"] = len(ds.records)
+            print(f"Loaded ML dataset: {len(ds.records)} records from {ml_dataset_path}")
             _ensure_ml_models_loaded()
         except Exception as e:
             print(f"Warning: could not load ML dataset from {ml_dataset_path}: {e}")
@@ -377,6 +383,14 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
         threading.Thread(target=_do_start, daemon=True).start()
         return jsonify({"ok": True})
 
+    def _ml_info():
+        return {
+            "ml_dataset_loaded": app.config["ml_dataset"] is not None,
+            "ml_dataset_name": app.config["ml_dataset_name"],
+            "ml_dataset_records": app.config["ml_dataset_records"],
+            "ml_models_ready": _ml_models_ready.is_set(),
+        }
+
     @app.route("/api/state")
     def api_state():
         error = app.config.get("start_error")
@@ -387,17 +401,14 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
         stage = app.config.get("start_stage")
         if stage is not None:
             return jsonify({"status": "starting", "stage": stage,
-                            "progress": app.config.get("start_progress")})
+                            "progress": app.config.get("start_progress"),
+                            **_ml_info()})
 
         state = app.config["review_state"]
         if state is None:
-            return jsonify({
-                "status": "waiting",
-                "models_ready": _models_ready.is_set(),
-                "ml_models_ready": _ml_models_ready.is_set(),
-                "ml_dataset_loaded": False,
-            })
-        return jsonify(state.get_state())
+            return jsonify({"status": "waiting", "models_ready": _models_ready.is_set(),
+                            **_ml_info()})
+        return jsonify({**state.get_state(), **_ml_info()})
 
     @app.route("/api/decide", methods=["POST"])
     def api_decide():
@@ -449,6 +460,8 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
             with state._lock:
                 state.ml_dataset = dataset
         app.config["ml_dataset"] = dataset
+        app.config["ml_dataset_name"] = f.filename or "dataset.pkl"
+        app.config["ml_dataset_records"] = len(dataset.records)
         return jsonify({
             "ok": True,
             "records": len(dataset.records),

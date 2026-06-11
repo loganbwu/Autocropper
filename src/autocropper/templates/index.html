@@ -134,6 +134,8 @@
         return;
       }
 
+      syncMlUi(data);
+
       if (data.status === 'starting') {
         showStarting(data.stage, data.progress);
         schedulePoll(data.progress != null ? 250 : 600);
@@ -277,21 +279,36 @@
   let _mlModelsReady = false;
 
   function syncMlUi(data) {
+    if (!('ml_dataset_loaded' in data || 'ml_models_ready' in data)) return;
+
     _mlMode = !!data.ml_mode;
     _mlDatasetLoaded = !!data.ml_dataset_loaded;
     _mlModelsReady = !!data.ml_models_ready;
 
     const toggle = document.getElementById('ml-toggle');
     const marginCtrl = document.getElementById('margin-control');
+    const fileLabel = document.getElementById('ml-file-label');
+    const status = document.getElementById('ml-status');
 
     toggle.disabled = !(_mlDatasetLoaded && _mlModelsReady);
     toggle.classList.toggle('on', _mlMode);
     marginCtrl.classList.toggle('ml-active', _mlMode);
 
-    if (_mlDatasetLoaded && !_mlModelsReady) {
-      document.getElementById('ml-status').textContent = 'loading models...';
-    } else if (!_mlDatasetLoaded) {
-      document.getElementById('ml-status').textContent = '';
+    if (_mlDatasetLoaded) {
+      const name = data.ml_dataset_name || 'dataset.pkl';
+      fileLabel.textContent = name;
+      fileLabel.title = name;
+      if (!_mlModelsReady) {
+        status.textContent = 'loading models...';
+      } else if (!_mlMode) {
+        status.textContent = data.ml_dataset_records ? `${data.ml_dataset_records} records` : '';
+      } else {
+        status.textContent = '';
+      }
+    } else {
+      fileLabel.textContent = 'dataset';
+      fileLabel.title = '';
+      status.textContent = '';
     }
   }
 
