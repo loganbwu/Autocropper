@@ -19,6 +19,7 @@ Overlay colours:
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -92,20 +93,6 @@ def _no_detection_panel(image_inf, label):
     draw.text((4, 3), label, fill=(255, 80, 80))
     return img
 
-
-def _sam_panel(image_inf, image_np, models, bbox, face_kps, label):
-    """Run MobileSAM with bbox prompt; return labelled overlay panel."""
-    sam_processor = models[2]
-    sam_model     = models[3]
-    device = next(models[1].parameters()).device
-    try:
-        with torch.no_grad():
-            mask = _run_sam(image_inf, bbox, sam_processor, sam_model, device)
-        panel = _make_overlay(image_np, mask, bbox=bbox, face_kps=face_kps)
-    except Exception as e:
-        print(f"    SAM failed: {e}", file=sys.stderr)
-        panel = image_inf.copy()
-    return _label(panel, label)
 
 
 def _yolo_select_person(results):
@@ -219,6 +206,14 @@ def main():
     sam2_processor, sam2_model = _load_sam2(device)
     print("All models loaded.\n")
 
+    t_gdino      = []
+    t_vitpose    = []
+    t_mobilesam1 = []   # GDINO → MobileSAM
+    t_mobilesam2 = []   # YOLOv8-pose → MobileSAM
+    t_yolo_pose  = []
+    t_yolo_seg   = []
+    t_sam2       = []
+
     for path in files:
         print(f"  {path.name}")
         image = _load_image(path)
@@ -233,9 +228,11 @@ def main():
         # ── GDINO detection (shared by panels 1 and 4) ──────────────────
         gdino_bbox, gdino_kps = None, None
         try:
+            t0 = time.perf_counter()
             boxes, _, _, _ = detect_people_with_masks(
                 (gdino_processor, gdino_model), image_inf
             )
+            t_gdino.append(time.perf_counter() - t0)
             if boxes:
                 if len(boxes) > 1:
                     areas = [(b[2]-b[0])*(b[3]-b[1]) for b in boxes]
@@ -243,11 +240,12 @@ def main():
                     print(f"    GDINO: {len(boxes)} people, using largest")
                 else:
                     gdino_bbox = boxes[0]
-                # ViTPose keypoints
-                vp_proc = models[4]
+                vp_proc  = models[4]
                 vp_model = models[5]
+                t0 = time.perf_counter()
                 with torch.no_grad():
                     kps, scores = _run_vitpose(image_inf, gdino_bbox, vp_proc, vp_model, device)
+                t_vitpose.append(time.perf_counter() - t0)
                 if kps is not None:
                     idx = [i for i in FACE_KP_INDICES if scores[i] > FACE_KP_THRESHOLD]
                     gdino_kps = kps[idx].tolist() if idx else None
@@ -258,16 +256,26 @@ def main():
 
         # ── Panel 1: GDINO → MobileSAM ──────────────────────────────────
         if gdino_bbox is not None:
-            panel1 = _sam_panel(image_inf, image_np, models, gdino_bbox, gdino_kps,
-                                 "GDINO → MobileSAM")
+            try:
+                t0 = time.perf_counter()
+                with torch.no_grad():
+                    mask1 = _run_sam(image_inf, gdino_bbox, models[2], models[3], device)
+                t_mobilesam1.append(time.perf_counter() - t0)
+                panel1 = _make_overlay(image_np, mask1, bbox=gdino_bbox, face_kps=gdino_kps)
+                panel1 = _label(panel1, "GDINO → MobileSAM")
+            except Exception as e:
+                print(f"    MobileSAM failed: {e}", file=sys.stderr)
+                panel1 = _no_detection_panel(image_inf, "GDINO → MobileSAM  [error]")
         else:
             panel1 = _no_detection_panel(image_inf, "GDINO → MobileSAM  [no detection]")
 
         # ── Panel 2: YOLOv8-pose → MobileSAM ───────────────────────────
         yolo_bbox, yolo_kps = None, None
         try:
+            t0 = time.perf_counter()
             with torch.no_grad():
                 res_pose = yolo_pose(image_np, verbose=False)[0]
+            t_yolo_pose.append(time.perf_counter() - t0)
             sel = _yolo_select_person(res_pose)
             if sel is not None:
                 yolo_bbox, _, orig_idx = sel
@@ -280,15 +288,25 @@ def main():
             print(f"    YOLO-pose failed: {e}", file=sys.stderr)
 
         if yolo_bbox is not None:
-            panel2 = _sam_panel(image_inf, image_np, models, yolo_bbox, yolo_kps,
-                                 "YOLOv8-pose → SAM")
+            try:
+                t0 = time.perf_counter()
+                with torch.no_grad():
+                    mask2 = _run_sam(image_inf, yolo_bbox, models[2], models[3], device)
+                t_mobilesam2.append(time.perf_counter() - t0)
+                panel2 = _make_overlay(image_np, mask2, bbox=yolo_bbox, face_kps=yolo_kps)
+                panel2 = _label(panel2, "YOLOv8-pose → MobileSAM")
+            except Exception as e:
+                print(f"    MobileSAM (panel 2) failed: {e}", file=sys.stderr)
+                panel2 = _no_detection_panel(image_inf, "YOLOv8-pose → MobileSAM  [error]")
         else:
-            panel2 = _no_detection_panel(image_inf, "YOLOv8-pose → SAM  [no detection]")
+            panel2 = _no_detection_panel(image_inf, "YOLOv8-pose → MobileSAM  [no detection]")
 
         # ── Panel 3: YOLOv8-seg (mask only, no SAM) ─────────────────────
         try:
+            t0 = time.perf_counter()
             with torch.no_grad():
                 res_seg = yolo_seg(image_np, verbose=False)[0]
+            t_yolo_seg.append(time.perf_counter() - t0)
             sel_seg = _yolo_select_person(res_seg)
             if sel_seg is not None:
                 seg_bbox, _, seg_idx = sel_seg
@@ -308,7 +326,9 @@ def main():
         # ── Panel 4: GDINO → SAM 2.1 tiny ───────────────────────────────
         if gdino_bbox is not None:
             try:
+                t0 = time.perf_counter()
                 mask4 = _run_sam2(image_inf, gdino_bbox, sam2_processor, sam2_model, device)
+                t_sam2.append(time.perf_counter() - t0)
                 panel4 = _make_overlay(image_np, mask4, bbox=gdino_bbox, face_kps=gdino_kps)
                 panel4 = _label(panel4, "GDINO → SAM 2.1 tiny")
             except Exception as e:
@@ -321,7 +341,35 @@ def main():
         _stack(panel1, panel2, panel3, panel4).save(out_path, format="JPEG", quality=88)
         print(f"    → {out_path.name}")
 
+    def _mean(ts):
+        return sum(ts) / len(ts) if ts else float("nan")
+
     print(f"\nDone. {len(files)} images written to {out_dir}")
+    print(f"\nMean inference times (n={len(files)} images):")
+    print(f"  {'Component':<30}  {'mean (s)':>8}  {'n':>4}")
+    print(f"  {'-'*30}  {'-'*8}  {'-'*4}")
+    rows = [
+        ("GDINO detection",            t_gdino),
+        ("ViTPose",                    t_vitpose),
+        ("MobileSAM (GDINO bbox)",     t_mobilesam1),
+        ("MobileSAM (YOLOv8 bbox)",    t_mobilesam2),
+        ("YOLOv8-pose detection",      t_yolo_pose),
+        ("YOLOv8-seg detection+mask",  t_yolo_seg),
+        ("SAM 2.1 tiny",               t_sam2),
+    ]
+    for label, ts in rows:
+        print(f"  {label:<30}  {_mean(ts):>8.3f}  {len(ts):>4}")
+    print()
+    print(f"  {'Pipeline':<30}  {'mean (s)':>8}")
+    print(f"  {'-'*30}  {'-'*8}")
+    pipelines = [
+        ("GDINO → MobileSAM",          _mean(t_gdino) + _mean(t_vitpose) + _mean(t_mobilesam1)),
+        ("YOLOv8-pose → MobileSAM",    _mean(t_yolo_pose) + _mean(t_mobilesam2)),
+        ("YOLOv8-seg",                 _mean(t_yolo_seg)),
+        ("GDINO → SAM 2.1 tiny",       _mean(t_gdino) + _mean(t_vitpose) + _mean(t_sam2)),
+    ]
+    for label, total in pipelines:
+        print(f"  {label:<30}  {total:>8.3f}")
 
 
 if __name__ == "__main__":
