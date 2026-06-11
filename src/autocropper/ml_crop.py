@@ -199,7 +199,8 @@ def extract_features(image, models, name=None, verbose=True):
         areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in boxes]
         idx = int(np.argmax(areas))
         bbox = boxes[idx]
-        print(f"{_CYAN}  GDINO (person detection){label}: found {len(boxes)} people, using largest (box {idx + 1}){_RESET}")
+        if verbose:
+            print(f"{_CYAN}  GDINO (person detection){label}: found {len(boxes)} people, using largest (box {idx + 1}){_RESET}")
     else:
         bbox = boxes[0]
 
