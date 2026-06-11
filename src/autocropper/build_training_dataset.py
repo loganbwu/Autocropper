@@ -14,7 +14,7 @@ Accepts two kinds of training images:
       have already been exported at the desired framing are used directly.
 
 For each image the script runs person detection (Grounding DINO), segmentation
-(SAM2), and pose estimation (ViTPose), then stores the result as a
+(SAM), and pose estimation (ViTPose), then stores the result as a
 TrainingRecord.  Images with no detectable person, multiple people, or no
 detectable face are silently skipped.
 """

@@ -67,8 +67,8 @@ def load_models():
 
 
 def load_ml_models():
-    """Load all models needed for ML crop mode: Grounding DINO + SAM2 + ViTPose."""
-    from transformers import AutoProcessor, AutoModelForMaskGeneration, AutoModel
+    """Load all models needed for ML crop mode: Grounding DINO + SAM + ViTPose."""
+    from transformers import SamProcessor, SamModel, AutoProcessor, VitPoseForPoseEstimation
 
     gdino_processor, gdino_model = load_models()
 
@@ -79,22 +79,22 @@ def load_ml_models():
     else:
         device = "cpu"
 
-    SAM2_MODEL = "facebook/sam2-hiera-tiny"
+    SAM_MODEL = "facebook/sam-vit-base"
     VITPOSE_MODEL = "usyd-community/vitpose-base-simple"
 
     kwargs = {"local_files_only": True}
     try:
-        sam_processor = AutoProcessor.from_pretrained(SAM2_MODEL, **kwargs)
-        sam_model = AutoModelForMaskGeneration.from_pretrained(SAM2_MODEL, **kwargs).to(device).eval()
+        sam_processor = SamProcessor.from_pretrained(SAM_MODEL, **kwargs)
+        sam_model = SamModel.from_pretrained(SAM_MODEL, **kwargs).to(device).eval()
         vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL, **kwargs)
-        vitpose_model = AutoModel.from_pretrained(VITPOSE_MODEL, **kwargs).to(device).eval()
+        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, **kwargs).to(device).eval()
     except Exception:
-        sam_processor = AutoProcessor.from_pretrained(SAM2_MODEL)
-        sam_model = AutoModelForMaskGeneration.from_pretrained(SAM2_MODEL).to(device).eval()
+        sam_processor = SamProcessor.from_pretrained(SAM_MODEL)
+        sam_model = SamModel.from_pretrained(SAM_MODEL).to(device).eval()
         vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL)
-        vitpose_model = AutoModel.from_pretrained(VITPOSE_MODEL).to(device).eval()
+        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL).to(device).eval()
 
-    print("ML models (SAM2 + ViTPose) loaded.")
+    print("ML models (SAM + ViTPose) loaded.")
     return gdino_processor, gdino_model, sam_processor, sam_model, vitpose_processor, vitpose_model
 
 

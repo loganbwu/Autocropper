@@ -52,29 +52,40 @@ class TrainingDataset:
 
 # ---- Low-level inference helpers ----
 
-def _run_sam2(image, bbox, sam_processor, sam_model, device):
-    """Run SAM2 with a single bbox prompt; return best binary mask (H, W) bool."""
+def _to_device(v, device):
+    """Move tensor to device; falls back to float32 if MPS rejects float64."""
+    if not hasattr(v, 'to'):
+        return v
+    try:
+        return v.to(device)
+    except TypeError:
+        return v.float().to(device)
+
+
+def _run_sam(image, bbox, sam_processor, sam_model, device):
+    """Run SAM with a single bbox prompt; return best binary mask (H, W) bool."""
     x1, y1, x2, y2 = (float(v) for v in bbox)
     inputs = sam_processor(images=image, input_boxes=[[[x1, y1, x2, y2]]], return_tensors="pt")
-    inputs = {k: v.to(device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+    inputs = {k: _to_device(v, device) for k, v in inputs.items()}
     with torch.no_grad():
         outputs = sam_model(**inputs)
-    masks, scores, _ = sam_processor.post_process_masks(
+    masks_list = sam_processor.image_processor.post_process_masks(
         outputs.pred_masks.cpu(),
         inputs["original_sizes"].cpu(),
         inputs["reshaped_input_sizes"].cpu(),
     )
-    # masks[0]: (num_masks, H, W) bool tensor
-    mask_arr = masks[0].numpy()
-    score_arr = scores[0].numpy()
-    return mask_arr[int(np.argmax(score_arr))].astype(bool)
+    # masks_list[0]: tensor (..., num_masks, H, W); iou_scores: (batch, ..., num_masks)
+    mask_t = masks_list[0]
+    iou = outputs.iou_scores[0].cpu().numpy().flatten()
+    mask_arr = mask_t.reshape(-1, mask_t.shape[-2], mask_t.shape[-1]).numpy()
+    return mask_arr[int(np.argmax(iou))].astype(bool)
 
 
 def _run_vitpose(image, bbox, vitpose_processor, vitpose_model, device):
     """Run ViTPose on a person bbox; return (keypoints (17,2), scores (17,)) or (None, None)."""
     x1, y1, x2, y2 = (float(v) for v in bbox)
     inputs = vitpose_processor(images=image, boxes=[[[x1, y1, x2, y2]]], return_tensors="pt")
-    inputs = {k: v.to(device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+    inputs = {k: _to_device(v, device) for k, v in inputs.items()}
     with torch.no_grad():
         outputs = vitpose_model(**inputs)
     poses = vitpose_processor.post_process_pose_estimation(
@@ -131,7 +142,7 @@ def extract_features(image, models):
 
     bbox = boxes[0]  # [x1, y1, x2, y2]
 
-    full_mask = _run_sam2(image, bbox, sam_processor, sam_model, device)
+    full_mask = _run_sam(image, bbox, sam_processor, sam_model, device)
     bbox_mask = _mask_bbox(full_mask)
     if bbox_mask is None:
         return None
