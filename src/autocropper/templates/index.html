@@ -52,7 +52,7 @@
   </div>
   <div class="panel" id="panel-crop" onclick="decide('crop')">
     <img id="img-crop" src="" alt="">
-    <div class="key-hint"><span class="key-badge">2</span> Apply crop</div>
+    <div class="key-hint"><span class="key-badge">2</span> <span id="crop-hint-text">Apply crop</span></div>
   </div>
 </div>
 
@@ -248,8 +248,8 @@
     document.getElementById('panel-orig').classList.remove('selected');
     document.getElementById('panel-crop').classList.remove('selected');
     updateBuffer(data.buffered || 0, data.prefetch, data.buffer_types);
-    // Show ML badge on crop panel when result came from ML mode
     document.getElementById('ml-badge').style.display = data.ml_crop ? '' : 'none';
+    document.getElementById('crop-hint-text').textContent = data.ml_crop ? 'Apply ML crop' : 'Apply margin crop';
     // Sync toggle state with server
     syncMlUi(data);
     uiReady = true;
