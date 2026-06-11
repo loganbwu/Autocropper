@@ -61,8 +61,12 @@ def _load_image(path: Path):
 
 # ── Query panel ────────────────────────────────────────────────────────────────
 
-def _query_panel(image_inf, mask, face_kps, pred_crop_xyxy):
-    """Render the query image with overlay, face dot, and predicted crop box."""
+def _query_panel(image_inf, mask, face_kps, pred_crop_xyxy, centre_trace=None):
+    """Render the query image with overlay, face dot, predicted crop box, and centre trace.
+
+    centre_trace: list of (cx, cy) in inference-image pixel coords, ordered k=1..N.
+    Drawn as a gradient line from cyan (k=1) to yellow (k=N) so convergence is visible.
+    """
     image_np = np.array(image_inf)
     colour   = np.zeros_like(image_np)
     colour[mask]  = [30,  100, 255]
@@ -79,13 +83,37 @@ def _query_panel(image_inf, mask, face_kps, pred_crop_xyxy):
         x1, y1, x2, y2 = (int(round(v)) for v in pred_crop_xyxy)
         draw.rectangle([x1, y1, x2, y2], outline=(255, 220, 0), width=3)
 
+    if centre_trace and len(centre_trace) > 1:
+        n = len(centre_trace)
+        r = max(3, w // 180)
+        # Lines first so dots render on top
+        for i in range(len(centre_trace) - 1):
+            t  = i / (n - 1)
+            cr = int(0   + t * 255)
+            cg = int(220 - t * 20)
+            cb = int(255 - t * 255)
+            x0, y0 = int(round(centre_trace[i][0])),   int(round(centre_trace[i][1]))
+            x1, y1 = int(round(centre_trace[i+1][0])), int(round(centre_trace[i+1][1]))
+            draw.line([x0, y0, x1, y1], fill=(cr, cg, cb), width=2)
+        for i, (cx, cy) in enumerate(centre_trace):
+            t  = i / (n - 1)
+            cr = int(0   + t * 255)
+            cg = int(220 - t * 20)
+            cb = int(255 - t * 255)
+            cx, cy = int(round(cx)), int(round(cy))
+            draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(cr, cg, cb))
+    elif centre_trace and len(centre_trace) == 1:
+        r  = max(3, w // 180)
+        cx, cy = int(round(centre_trace[0][0])), int(round(centre_trace[0][1]))
+        draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(0, 220, 255))
+
     if face_kps is not None:
         r = max(3, w // 150)
         for x, y in face_kps:
             draw.ellipse([x-r, y-r, x+r, y+r], fill=(0, 230, 80))
 
     draw.rectangle([0, 0, img.width, 22], fill=(0, 0, 0))
-    draw.text((4, 3), "Query", fill=(255, 255, 255))
+    draw.text((4, 3), "Query  (cyan=k1 → yellow=kN)", fill=(255, 255, 255))
     return img
 
 
@@ -323,23 +351,27 @@ def main():
             print(f"    No matching training records for AR≈{query_ar:.2f}")
             continue
 
-        # Predicted crop (in inference space, for display)
-        pred_crop = None
+        # Predicted crop and centre trace (in inference space, for display)
+        pred_crop    = None
+        centre_trace = []
+        mw_px = float(mx2 - mx1)
+        mh_px = float(my2 - my1)
         try:
-            pred_cc_x  = float(np.mean([r.crop_center[0] for r, _ in neighbours]))
-            pred_cc_y  = float(np.mean([r.crop_center[1] for r, _ in neighbours]))
-            pred_margin = float(np.mean([r.min_margin     for r, _ in neighbours]))
-            mw_px = float(mx2 - mx1);  mh_px = float(my2 - my1)
-            cx = mx1 + pred_cc_x * mw_px
-            cy = my1 + pred_cc_y * mh_px
-            hw = mw_px / 2 + pred_margin * mw_px
-            hh = mh_px / 2 + pred_margin * mh_px
+            for k in range(1, len(neighbours) + 1):
+                top_k = neighbours[:k]
+                cc_x = float(np.mean([r.crop_center[0] for r, _ in top_k]))
+                cc_y = float(np.mean([r.crop_center[1] for r, _ in top_k]))
+                centre_trace.append((mx1 + cc_x * mw_px, my1 + cc_y * mh_px))
+            margin = float(np.mean([r.min_margin for r, _ in neighbours]))
+            cx, cy = centre_trace[-1]
+            hw = mw_px / 2 + margin * mw_px
+            hh = mh_px / 2 + margin * mh_px
             pred_crop = enforce_aspect_ratio(cx-hw, cy-hh, cx+hw, cy+hh, w_inf, h_inf)
         except Exception:
             pass
 
         # Composite image
-        query_img  = _query_panel(image_inf, mask, face_kps, pred_crop)
+        query_img  = _query_panel(image_inf, mask, face_kps, pred_crop, centre_trace)
         neighbour_grid = _neighbour_grid(neighbours, n_cols=args.cols)
 
         gap = 8
