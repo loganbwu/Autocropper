@@ -311,7 +311,8 @@ def _normalize_mask(mask):
 
 
 def _mask_iou(m1, m2):
-    return float((m1 & m2).sum()) / (MASK_SIZE * MASK_SIZE)
+    union = float((m1 | m2).sum())
+    return float((m1 & m2).sum()) / union if union > 0 else 1.0
 
 
 def _face_dist(c1, c2):
@@ -392,7 +393,8 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
     step = MASK_SIZE // KNN_COMPARE_SIZE
     q_small = query_norm[::step, ::step]  # strided view, no copy
     intersections = (masks_small & q_small).sum(axis=(1, 2)).astype(np.float32)
-    ious = intersections / (q_small.shape[0] * q_small.shape[1])
+    unions = (masks_small | q_small).sum(axis=(1, 2)).astype(np.float32)
+    ious = np.where(unions > 0, intersections / unions, 1.0)
 
     if query_fc is None:
         # No face detected — compare on mask shape only
