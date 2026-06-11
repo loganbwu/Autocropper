@@ -116,13 +116,14 @@ class ReviewState:
         self._decision_q = queue.Queue()
         self._lock = threading.Lock()
         self._inference_lock = threading.Lock()  # serialises GPU/MPS model calls across worker threads
-        self._producer_gen = 0  # incremented on mode switch; producer discards stale results
+        self._producer_gen = 0  # incremented on mode switch; old producer exits, new one starts
+        self._decided_paths: set = set()  # CR3 paths the user has explicitly accepted or rejected
 
-        threading.Thread(target=self._producer, daemon=True).start()
+        threading.Thread(target=self._producer, args=(self.files, self._producer_gen), daemon=True).start()
         threading.Thread(target=self._consumer, daemon=True).start()
 
-    def _producer(self):
-        producer_gen = self._producer_gen  # capture at thread start
+    def _producer(self, files, gen):
+        """Worker thread. Exits early (without emitting sentinel) when _producer_gen changes."""
 
         def _process(cr3):
             with self._lock:
@@ -135,21 +136,20 @@ class ReviewState:
                                 _inference_lock=self._inference_lock, margin_ratio=margin)
 
         try:
-            # Sliding-window thread pool: PROCESSING_WORKERS threads run file I/O in
-            # parallel; the _inference_lock inside compute_crop serialises the GPU/MPS
-            # model call so at most one inference runs at a time. Results are collected
-            # in submission order so the review queue is ordered.
             with ThreadPoolExecutor(max_workers=PROCESSING_WORKERS) as pool:
                 pending = collections.deque()
-                files_iter = iter(self.files)
+                files_iter = iter(files)
 
                 for cr3 in itertools.islice(files_iter, PROCESSING_WORKERS):
                     pending.append((cr3, pool.submit(_process, cr3)))
 
                 while pending:
+                    # Exit immediately if a mode switch started a new producer.
+                    if self._producer_gen != gen:
+                        return
+
                     cr3, future = pending.popleft()
 
-                    # Keep the window full: submit next file while we wait for this result.
                     try:
                         next_cr3 = next(files_iter)
                         pending.append((next_cr3, pool.submit(_process, next_cr3)))
@@ -166,18 +166,9 @@ class ReviewState:
                             self.producer_processed += 1
                         continue
 
-                    # Mode switched while this future was in-flight: discard the stale
-                    # result and resume with the new mode.  _recompute has already taken
-                    # ownership of reprocessing the buffer items that were cleared during
-                    # the switch.  Up to PROCESSING_WORKERS in-flight files may be silently
-                    # skipped here; that is acceptable.
-                    current_gen = self._producer_gen
-                    if current_gen != producer_gen:
-                        producer_gen = current_gen
-                        with self._lock:
-                            self.producer_processed += 1
-                        print(f"  Mode switched, discarding stale result: {cr3.name}")
-                        continue
+                    # Exit after waiting for result if gen changed while we were blocked.
+                    if self._producer_gen != gen:
+                        return
 
                     with self._lock:
                         self.producer_processed += 1
@@ -201,7 +192,9 @@ class ReviewState:
                             self._prefetch_cv.wait()
                     self._prefetch_q.put(result)
         finally:
-            self._prefetch_q.put(None)  # sentinel always sent, even after an unexpected error
+            # Only the current-generation producer emits the session-end sentinel.
+            if self._producer_gen == gen:
+                self._prefetch_q.put(None)
 
     def set_prefetch(self, n):
         with self._lock:
@@ -230,17 +223,24 @@ class ReviewState:
 
             choice = self._decision_q.get()
 
+            # "_discard" is sent by api_ml_mode when the mode switches while an
+            # image is displayed; just drop the current item and go back to waiting.
+            if choice == "_discard":
+                continue
+
             with self._lock:
                 if choice == "crop":
                     d = self.current
                     write_xmp(d["cr3_path"], d["x1"], d["y1"], d["x2"], d["y2"], d["w"], d["h"])
                     self.accepted += 1
+                    self._decided_paths.add(d["cr3_path"])
                     print(f"  Cropped:   {d['cr3_path'].name}")
                 else:
                     d = self.current
                     write_decline_marker(d["cr3_path"])
-                    print(f"  Declined:  {d['cr3_path'].name}")
                     self.rejected += 1
+                    self._decided_paths.add(d["cr3_path"])
+                    print(f"  Declined:  {d['cr3_path'].name}")
                 self.current = None
                 self.status = "loading"
 
@@ -516,78 +516,41 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 state.ml_mode = enabled
                 state.ml_dataset = dataset if enabled else None
                 current_item = state.current
-                margin = state.margin
                 if old_mode != enabled:
-                    # Bump the producer generation so any in-flight futures computed
-                    # with the old mode are discarded rather than landing in the queue.
                     state._producer_gen += 1
-                    # Hide the current image immediately so the old-mode crop
-                    # cannot be decided on while recompute is in flight.
+                    new_gen = state._producer_gen
                     state.current = None
                     state.status = "loading"
+                    # Reset per-pass auto-skip counters so the new producer starts clean.
+                    state.skipped = state.pre_skipped
+                    state.no_person_skipped = 0
+                    state.noop_skipped = 0
+                    state.producer_processed = len(state._decided_paths)
 
             if old_mode != enabled:
-                # Drain the buffer so no old-mode results remain. Preserve the
-                # producer sentinel (None) so the consumer eventually gets EOF.
-                drained = []
-                found_sentinel = False
+                # If an image was on screen, unblock the consumer so it stops waiting
+                # for a user decision and goes back to reading from the queue.
+                if current_item is not None:
+                    state._decision_q.put("_discard")
+
+                # Drain the buffer entirely; the new producer will repopulate it.
                 while True:
                     try:
-                        item = state._prefetch_q.get_nowait()
-                        if item is None:
-                            found_sentinel = True
-                        else:
-                            drained.append(item)
+                        state._prefetch_q.get_nowait()
                     except queue.Empty:
                         break
-                # Let the producer fill empty slots.
+
+                # Wake up the old producer if it was blocked waiting for buffer space.
                 with state._prefetch_cv:
                     state._prefetch_cv.notify_all()
 
-                def _recompute(current_item=current_item, drained=drained,
-                               found_sentinel=found_sentinel, margin=margin):
-                    def _compute(cr3):
-                        if enabled:
-                            return predict_ml_crop(cr3, dataset, _ml_models,
-                                                   _inference_lock=state._inference_lock)
-                        return compute_crop(state.models, cr3, state.all_people,
-                                            _inference_lock=state._inference_lock,
-                                            margin_ratio=margin)
-
-                    # Recompute the displayed image first — most urgent.
-                    if current_item is not None:
-                        new = _compute(current_item["cr3_path"])
-                        if isinstance(new, dict):
-                            if not new.get("ml_crop"):
-                                recompute_crop(new, margin)
-                        else:
-                            new = None  # no person or noop — producer will handle in due course
-                        with state._lock:
-                            # Only restore if we're still in "loading" from this switch.
-                            if state.current is None:
-                                state.current = new
-                                state.status = "ready" if new is not None else "loading"
-
-                    # Refill the buffer with new-mode results in original order.
-                    for item in drained:
-                        cr3 = item["cr3_path"]
-                        try:
-                            new = _compute(cr3)
-                            if not isinstance(new, dict):
-                                continue
-                            if not new.get("ml_crop"):
-                                recompute_crop(new, margin)
-                            with state._prefetch_cv:
-                                while state._prefetch_q.qsize() >= state.prefetch:
-                                    state._prefetch_cv.wait()
-                            state._prefetch_q.put(new)
-                        except Exception as e:
-                            print(f"  Warning: buffer reprocess failed for {cr3.name}: {e}")
-
-                    if found_sentinel:
-                        state._prefetch_q.put(None)
-
-                threading.Thread(target=_recompute, daemon=True).start()
+                # Start fresh from photo #1 of files the user has not yet decided on.
+                remaining = [f for f in state.files if f not in state._decided_paths]
+                threading.Thread(
+                    target=state._producer,
+                    args=(remaining, new_gen),
+                    daemon=True,
+                ).start()
 
         return jsonify({"ok": True, "ml_mode": enabled})
 
