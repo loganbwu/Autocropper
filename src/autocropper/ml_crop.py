@@ -68,20 +68,35 @@ class TrainingDataset:
     alpha: float = 0.5      # weight: 0 = face distance only, 1 = mask overlap only
 
     def save(self, path):
-        with open(path, 'wb') as f:
+        import gzip
+        with gzip.open(path, 'wb', compresslevel=6) as f:
             pickle.dump(self, f)
 
     @classmethod
     def load(cls, path_or_stream, augment_mirrors=True):
-        if hasattr(path_or_stream, 'read'):
-            dataset = pickle.load(path_or_stream)
-        else:
-            with open(path_or_stream, 'rb') as f:
-                dataset = pickle.load(f)
+        dataset = cls._deserialise(path_or_stream)
         if augment_mirrors:
             mirrors = [cls._mirror_record(r) for r in dataset.records]
             dataset.records = dataset.records + mirrors
         return dataset
+
+    @staticmethod
+    def _deserialise(src):
+        """Load a dataset from a path or stream; auto-detects gzip vs plain pickle."""
+        import gzip
+        _GZIP_MAGIC = b'\x1f\x8b'
+        if hasattr(src, 'read'):
+            raw = src.read()
+            if raw[:2] == _GZIP_MAGIC:
+                raw = gzip.decompress(raw)
+            return pickle.loads(raw)
+        with open(src, 'rb') as f:
+            magic = f.read(2)
+        if magic == _GZIP_MAGIC:
+            with gzip.open(src, 'rb') as f:
+                return pickle.load(f)
+        with open(src, 'rb') as f:
+            return pickle.load(f)
 
     @staticmethod
     def _mirror_record(r):
