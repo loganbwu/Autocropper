@@ -19,3 +19,6 @@ wheels/
 
 # Claude Code
 .claude/
+
+# training data (large binaries)
+data/
