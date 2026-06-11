@@ -85,14 +85,14 @@ def load_ml_models():
     kwargs = {"local_files_only": True}
     try:
         sam_processor = SamProcessor.from_pretrained(SAM_MODEL, **kwargs)
-        sam_model = SamModel.from_pretrained(SAM_MODEL, device_map=device, **kwargs).eval()
+        sam_model = SamModel.from_pretrained(SAM_MODEL, **kwargs).to(device).eval()
         vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL, **kwargs)
-        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, device_map=device, **kwargs).eval()
+        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, **kwargs).to(device).eval()
     except Exception:
         sam_processor = SamProcessor.from_pretrained(SAM_MODEL)
-        sam_model = SamModel.from_pretrained(SAM_MODEL, device_map=device).eval()
+        sam_model = SamModel.from_pretrained(SAM_MODEL).to(device).eval()
         vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL)
-        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, device_map=device).eval()
+        vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL).to(device).eval()
 
     print("ML models (SAM + ViTPose) loaded.")
     return gdino_processor, gdino_model, sam_processor, sam_model, vitpose_processor, vitpose_model
