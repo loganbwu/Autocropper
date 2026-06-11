@@ -96,6 +96,42 @@ rye run optimize-weights output.pkl
 
 Runs leave-one-out cross-validation over `alpha ∈ [0.0, 0.1, …, 1.0]` and reports the value with the lowest mean crop-centre prediction error. The dataset can then be reloaded with the updated alpha.
 
+### Training dataset notes
+
+- **Gzip compression** — datasets are saved and loaded in gzip format automatically; older uncompressed `.pkl` files are still readable.
+- **Mirror augmentation** — each record is horizontally mirrored at load time, doubling the effective dataset size without requiring extra source images.
+
+## Diagnostic Tools
+
+### diagnostic-knn
+
+```bash
+rye run diagnostic-knn <input_folder> <dataset.pkl> <output_folder> [--n N] [--cols C]
+```
+
+For each image, produces a composite JPEG showing:
+
+- **Left panel** — query image with blue/red mask overlay, green face keypoints, yellow predicted crop box, and a cyan→yellow convergence trace showing how the predicted crop centre shifts as more neighbours are included
+- **Right grid** — the *n* nearest training neighbours, each showing the source photo with blue/red overlay, a green face centroid dot, and a red crop centre dot; falls back to a blue silhouette when no source image is available
+
+### diagnostic-masks
+
+```bash
+rye run diagnostic-masks <input_folder> <output_folder> [--n N] [--yolo-padding P]
+```
+
+Produces a five-panel JPEG per image comparing segmentation strategies:
+
+| Panel | Strategy |
+|-------|----------|
+| 1 | GDINO bbox → SAM 2.1 (current pipeline) |
+| 2 | YOLOv8-pose tight bbox → SAM 2.1 |
+| 3 | YOLOv8-pose + padding → SAM 2.1 |
+| 4 | YOLOv8-pose + keypoints union bbox → SAM 2.1 |
+| 5 | YOLOv8-seg mask directly (no SAM) |
+
+Overlay colours: blue = person mask, red = background, yellow = SAM prompt box, green = face keypoints.
+
 ## How Classic Crop Works
 
 1. Grounding DINO detects person bounding boxes

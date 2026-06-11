@@ -142,22 +142,20 @@ def _draw_label(img, text, alpha=160):
 def _neighbour_thumb(record, rank, distance, size=THUMB_SIZE):
     """Render a training record as a labelled thumbnail.
 
-    If source_path is set and the file exists, shows the actual image.
-    Falls back to a mask silhouette for older records without a path.
+    If source_path and mask_bbox_norm are set and the file exists, shows the actual
+    image with mask overlay and dots.  Falls back to a mask silhouette otherwise.
     """
-    mirrored = getattr(record, "mirrored", False)
-
-    # Attempt to load source image
-    source = Path(record.source_path) if getattr(record, "source_path", "") else None
+    mirrored  = getattr(record, "mirrored", False)
+    source    = Path(record.source_path) if getattr(record, "source_path", "") else None
     bbox_norm = getattr(record, "mask_bbox_norm", None)
-    if source and source.exists():
+
+    if source and source.exists() and bbox_norm is not None:
         try:
             src_img = _load_image(source)
             if src_img is not None:
                 if mirrored:
                     src_img = src_img.transpose(Image.FLIP_LEFT_RIGHT)
                 w_src, h_src = src_img.size
-                # Compute letterbox layout
                 scale_t   = size / max(w_src, h_src)
                 thumb_w   = round(w_src * scale_t)
                 thumb_h   = round(h_src * scale_t)
@@ -167,44 +165,47 @@ def _neighbour_thumb(record, rank, distance, size=THUMB_SIZE):
                 canvas_np = np.full((size, size, 3), 30, dtype=np.uint8)
                 canvas_np[off_y:off_y + thumb_h, off_x:off_x + thumb_w] = np.array(src_small)
 
-                if bbox_norm is not None:
-                    # Project stored mask onto canvas coords
-                    bx1 = off_x + bbox_norm[0] * thumb_w
-                    by1 = off_y + bbox_norm[1] * thumb_h
-                    bx2 = off_x + bbox_norm[2] * thumb_w
-                    by2 = off_y + bbox_norm[3] * thumb_h
-                    bw  = max(1, int(round(bx2 - bx1)))
-                    bh  = max(1, int(round(by2 - by1)))
-                    mask_resized = np.array(
-                        Image.fromarray(record.mask.astype(np.uint8) * 255)
-                             .resize((bw, bh), Image.NEAREST)
-                    ).astype(bool)
-                    full_mask = np.zeros((size, size), dtype=bool)
-                    y1c = max(0, int(round(by1)));  y2c = min(size, y1c + bh)
-                    x1c = max(0, int(round(bx1)));  x2c = min(size, x1c + bw)
-                    full_mask[y1c:y2c, x1c:x2c] = mask_resized[:y2c - y1c, :x2c - x1c]
-                    img_area = np.zeros((size, size), dtype=bool)
-                    img_area[off_y:off_y + thumb_h, off_x:off_x + thumb_w] = True
-                    colour = np.zeros((size, size, 3), dtype=np.uint8)
-                    colour[full_mask & img_area]  = [30,  100, 255]
-                    colour[~full_mask & img_area] = [220,  40,  40]
-                    blended = (
-                        canvas_np.astype(float) * (1 - OVERLAY_ALPHA)
-                        + colour.astype(float) * OVERLAY_ALPHA
-                    ).clip(0, 255).astype(np.uint8)
-                    blended[~img_area] = 30
-                    img  = Image.fromarray(blended)
-                    draw = ImageDraw.Draw(img)
-                    # Face centroid dot
-                    if record.face_centroid is not None:
-                        r_dot = max(3, size // 60)
-                        bw_n  = bbox_norm[2] - bbox_norm[0]
-                        bh_n  = bbox_norm[3] - bbox_norm[1]
-                        fcx = int(round(off_x + (bbox_norm[0] + record.face_centroid[0] * bw_n) * thumb_w))
-                        fcy = int(round(off_y + (bbox_norm[1] + record.face_centroid[1] * bh_n) * thumb_h))
-                        draw.ellipse([fcx - r_dot, fcy - r_dot, fcx + r_dot, fcy + r_dot], fill=(0, 200, 80))
-                else:
-                    img = Image.fromarray(canvas_np)
+                # Project stored mask onto canvas coords
+                bx1 = off_x + bbox_norm[0] * thumb_w
+                by1 = off_y + bbox_norm[1] * thumb_h
+                bx2 = off_x + bbox_norm[2] * thumb_w
+                by2 = off_y + bbox_norm[3] * thumb_h
+                bw  = max(1, int(round(bx2 - bx1)))
+                bh  = max(1, int(round(by2 - by1)))
+                mask_resized = np.array(
+                    Image.fromarray(record.mask.astype(np.uint8) * 255)
+                         .resize((bw, bh), Image.NEAREST)
+                ).astype(bool)
+                full_mask = np.zeros((size, size), dtype=bool)
+                y1c = max(0, int(round(by1)));  y2c = min(size, y1c + bh)
+                x1c = max(0, int(round(bx1)));  x2c = min(size, x1c + bw)
+                full_mask[y1c:y2c, x1c:x2c] = mask_resized[:y2c - y1c, :x2c - x1c]
+                img_area = np.zeros((size, size), dtype=bool)
+                img_area[off_y:off_y + thumb_h, off_x:off_x + thumb_w] = True
+                colour = np.zeros((size, size, 3), dtype=np.uint8)
+                colour[full_mask & img_area]  = [30,  100, 255]
+                colour[~full_mask & img_area] = [220,  40,  40]
+                blended = (
+                    canvas_np.astype(float) * (1 - OVERLAY_ALPHA)
+                    + colour.astype(float) * OVERLAY_ALPHA
+                ).clip(0, 255).astype(np.uint8)
+                blended[~img_area] = 30
+                img  = Image.fromarray(blended)
+                draw = ImageDraw.Draw(img)
+                r_dot = max(3, size // 60)
+                bw_n  = bbox_norm[2] - bbox_norm[0]
+                bh_n  = bbox_norm[3] - bbox_norm[1]
+
+                # Green dot: face centroid
+                if record.face_centroid is not None:
+                    fcx = int(round(off_x + (bbox_norm[0] + record.face_centroid[0] * bw_n) * thumb_w))
+                    fcy = int(round(off_y + (bbox_norm[1] + record.face_centroid[1] * bh_n) * thumb_h))
+                    draw.ellipse([fcx - r_dot, fcy - r_dot, fcx + r_dot, fcy + r_dot], fill=(0, 200, 80))
+
+                # Red dot: crop centre
+                ccx = int(round(off_x + (bbox_norm[0] + record.crop_center[0] * bw_n) * thumb_w))
+                ccy = int(round(off_y + (bbox_norm[1] + record.crop_center[1] * bh_n) * thumb_h))
+                draw.ellipse([ccx - r_dot, ccy - r_dot, ccx + r_dot, ccy + r_dot], fill=(220, 60, 60))
 
                 img = _draw_label(img, f"#{rank}  dist={distance:.3f}")
                 return img
@@ -218,12 +219,11 @@ def _neighbour_thumb(record, rank, distance, size=THUMB_SIZE):
     ).astype(bool)
 
     canvas = np.full((size, size, 3), 30, dtype=np.uint8)
-    canvas[mask_small]  = [220, 220, 220]
+    canvas[mask_small] = [30, 100, 255]  # blue, matching overlay colour
 
     img  = Image.fromarray(canvas)
     draw = ImageDraw.Draw(img)
 
-    # Locate content region in the scaled mask to position dots correctly.
     mx1, my1, mx2, my2 = _mask_content_bbox(mask_small)
     mw = max(mx2 - mx1, 1)
     mh = max(my2 - my1, 1)
