@@ -92,9 +92,10 @@ class ReviewState:
 
         self.accepted = 0
         self.rejected = 0
-        self.pre_skipped = pre_skipped   # already-reviewed files excluded before this session
-        self.auto_skipped = 0            # skipped during this session (no person / no-op crop)
-        self.skipped = pre_skipped       # kept for backward compat: pre + auto
+        self.pre_skipped = pre_skipped       # already-reviewed files excluded before this session
+        self.no_person_skipped = 0           # person not detected (or inference error)
+        self.noop_skipped = 0                # person found but crop is ~full frame
+        self.skipped = pre_skipped           # combined: pre + no_person + noop
         self.producer_processed = 0
         self.margin = MARGIN_DEFAULT
         self.status = "loading"
@@ -157,7 +158,7 @@ class ReviewState:
                         print(f"  Warning: skipping {cr3.name} — {e}")
                         with self._lock:
                             self.skipped += 1
-                            self.auto_skipped += 1
+                            self.no_person_skipped += 1
                             self.producer_processed += 1
                         continue
 
@@ -165,10 +166,16 @@ class ReviewState:
                         self.producer_processed += 1
                         if result is None:
                             self.skipped += 1
-                            self.auto_skipped += 1
+                            self.no_person_skipped += 1
+                        elif result is False:
+                            self.skipped += 1
+                            self.noop_skipped += 1
 
                     if result is None:
                         print(f"  No person: {cr3.name}")
+                        continue
+                    if result is False:
+                        print(f"  No-op crop: {cr3.name}")
                         continue
 
                     print(f"  Ready:     {cr3.name}")
@@ -230,15 +237,17 @@ class ReviewState:
     def get_state(self):
         with self._lock:
             done_count = self.accepted + self.rejected
+            auto_skipped = self.no_person_skipped + self.noop_skipped
             # Include auto-skips in progress so the bar reflects true processing progress.
-            reviewed_count = done_count + self.auto_skipped
+            reviewed_count = done_count + auto_skipped
             if self.status == "done":
                 return {
                     "status": "done",
                     "accepted": self.accepted,
                     "rejected": self.rejected,
                     "pre_skipped": self.pre_skipped,
-                    "auto_skipped": self.auto_skipped,
+                    "no_person_skipped": self.no_person_skipped,
+                    "noop_skipped": self.noop_skipped,
                 }
             buffered = self._prefetch_q.qsize()
             # Peek at queue contents (internal deque) to get per-slot ML flag.
@@ -528,13 +537,15 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                     # Recompute the displayed image first — most urgent.
                     if current_item is not None:
                         new = _compute(current_item["cr3_path"])
-                        if new is not None:
+                        if isinstance(new, dict):
                             if not new.get("ml_crop"):
                                 recompute_crop(new, margin)
+                        else:
+                            new = None  # no person or noop — producer will handle in due course
                         with state._lock:
                             # Only restore if we're still in "loading" from this switch.
                             if state.current is None:
-                                state.current = new  # may be None if person not found
+                                state.current = new
                                 state.status = "ready" if new is not None else "loading"
 
                     # Refill the buffer with new-mode results in original order.
@@ -542,7 +553,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                         cr3 = item["cr3_path"]
                         try:
                             new = _compute(cr3)
-                            if new is None:
+                            if not isinstance(new, dict):
                                 continue
                             if not new.get("ml_crop"):
                                 recompute_crop(new, margin)

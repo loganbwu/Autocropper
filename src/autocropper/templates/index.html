@@ -391,14 +391,16 @@
 
     const stats = document.createElement('div');
     stats.id = 'stats';
-    const autoSkipLine = data.auto_skipped > 0
-      ? `<div>No person / no-op crop: <span>${data.auto_skipped}</span></div>` : '';
+    const noPersonLine = data.no_person_skipped > 0
+      ? `<div>No person detected: <span>${data.no_person_skipped}</span></div>` : '';
+    const noopLine = data.noop_skipped > 0
+      ? `<div>No-op crop skipped: <span>${data.noop_skipped}</span></div>` : '';
     const preSkipLine = data.pre_skipped > 0
       ? `<div>Already reviewed: <span>${data.pre_skipped}</span></div>` : '';
     stats.innerHTML = `
       <div>Crops applied: <span>${data.accepted}</span></div>
       <div>Kept original: <span>${data.rejected}</span></div>
-      ${autoSkipLine}${preSkipLine}
+      ${noPersonLine}${noopLine}${preSkipLine}
     `;
     overlay.appendChild(stats);
 

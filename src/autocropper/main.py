@@ -17,7 +17,7 @@ from tqdm import tqdm
 # ---------------- CONFIG ----------------
 
 GDINO_MODEL = "IDEA-Research/grounding-dino-tiny"
-TEXT_PROMPT = "dancing person."   # Grounding DINO requires a trailing period
+TEXT_PROMPT = "person."   # Grounding DINO requires a trailing period
 CONFIDENCE  = 0.3        # Box and text threshold for Grounding DINO
 MARGIN_RATIO = 0.20      # Margin around merged box
 INSTAGRAM_RATIO = 5 / 4  # Instagram's widest feed crop (5:4 landscape / 4:5 portrait)
@@ -107,8 +107,7 @@ def detect_people_with_masks(models, image: Image.Image):
 
     gdino_inputs = gdino_processor(images=image, text=TEXT_PROMPT, return_tensors="pt")
     gdino_inputs = {k: v.to(device) for k, v in gdino_inputs.items()}
-    device_type = device.type  # "cuda", "mps", or "cpu"
-    with torch.no_grad(), torch.autocast(device_type=device_type, dtype=torch.float16):
+    with torch.no_grad():
         gdino_outputs = gdino_model(**gdino_inputs)
 
     results = gdino_processor.post_process_grounded_object_detection(
@@ -479,7 +478,7 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lo
 
     # Skip if the crop is effectively the full frame (no meaningful difference)
     if (x2 - x1) * (y2 - y1) / (w * h) > 0.96:
-        return None
+        return False  # sentinel: person found but crop is ~full frame
 
     orig_buf = io.BytesIO()
     img.save(orig_buf, format="JPEG", quality=85)
