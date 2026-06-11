@@ -53,14 +53,14 @@ def load_models():
     try:
         gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True, **kwargs)
         gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-            GDINO_MODEL, dtype=torch.float16, device_map=device, **kwargs
-        ).eval()
+            GDINO_MODEL, **kwargs
+        ).to(device).eval()
     except Exception:
         # Not cached yet — download and cache
         gdino_processor = AutoProcessor.from_pretrained(GDINO_MODEL, use_fast=True)
         gdino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-            GDINO_MODEL, dtype=torch.float16, device_map=device
-        ).eval()
+            GDINO_MODEL
+        ).to(device).eval()
 
     return gdino_processor, gdino_model
 
