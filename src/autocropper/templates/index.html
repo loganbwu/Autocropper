@@ -244,7 +244,7 @@
     const overlay = document.getElementById('overlay');
     overlay.classList.remove('hidden');
     document.getElementById('overlay-title').textContent = 'Processing...';
-    const analysed = data.producer_idx != null ? data.producer_idx : data.idx;
+    const analysed = Math.min((data.producer_idx != null ? data.producer_idx : data.idx) + 1, data.total);
     const sub = data.total > 0
       ? `Analysing ${analysed} of ${data.total}`
       : 'Analysing images';
