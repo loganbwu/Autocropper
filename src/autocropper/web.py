@@ -489,49 +489,72 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 old_mode = state.ml_mode
                 state.ml_mode = enabled
                 state.ml_dataset = dataset if enabled else None
-                current = state.current
+                current_item = state.current
                 margin = state.margin
+                if old_mode != enabled:
+                    # Hide the current image immediately so the old-mode crop
+                    # cannot be decided on while recompute is in flight.
+                    state.current = None
+                    state.status = "loading"
 
             if old_mode != enabled:
-                def _recompute(current=current, margin=margin):
-                    # Recompute currently-displayed image first (most urgent).
-                    if current is not None:
-                        cr3 = current["cr3_path"]
-                        if enabled:
-                            new_result = predict_ml_crop(cr3, dataset, _ml_models,
-                                                         _inference_lock=state._inference_lock)
-                        else:
-                            new_result = compute_crop(state.models, cr3, state.all_people,
-                                                      _inference_lock=state._inference_lock,
-                                                      margin_ratio=margin)
-                        if new_result is not None:
-                            if not new_result.get("ml_crop"):
-                                recompute_crop(new_result, margin)
-                            with state._lock:
-                                if state.current is not None and state.current["cr3_path"] == cr3:
-                                    state.current = new_result
-
-                    # Reprocess buffered items in-place (front-to-back = most urgent first).
-                    # The queue holds dict references so updating them is visible to the consumer.
-                    for item in list(state._prefetch_q.queue):
+                # Drain the buffer so no old-mode results remain. Preserve the
+                # producer sentinel (None) so the consumer eventually gets EOF.
+                drained = []
+                found_sentinel = False
+                while True:
+                    try:
+                        item = state._prefetch_q.get_nowait()
                         if item is None:
-                            continue
+                            found_sentinel = True
+                        else:
+                            drained.append(item)
+                    except queue.Empty:
+                        break
+                # Let the producer fill empty slots.
+                with state._prefetch_cv:
+                    state._prefetch_cv.notify_all()
+
+                def _recompute(current_item=current_item, drained=drained,
+                               found_sentinel=found_sentinel, margin=margin):
+                    def _compute(cr3):
+                        if enabled:
+                            return predict_ml_crop(cr3, dataset, _ml_models,
+                                                   _inference_lock=state._inference_lock)
+                        return compute_crop(state.models, cr3, state.all_people,
+                                            _inference_lock=state._inference_lock,
+                                            margin_ratio=margin)
+
+                    # Recompute the displayed image first — most urgent.
+                    if current_item is not None:
+                        new = _compute(current_item["cr3_path"])
+                        if new is not None:
+                            if not new.get("ml_crop"):
+                                recompute_crop(new, margin)
+                        with state._lock:
+                            # Only restore if we're still in "loading" from this switch.
+                            if state.current is None:
+                                state.current = new  # may be None if person not found
+                                state.status = "ready" if new is not None else "loading"
+
+                    # Refill the buffer with new-mode results in original order.
+                    for item in drained:
                         cr3 = item["cr3_path"]
                         try:
-                            if enabled:
-                                new = predict_ml_crop(cr3, dataset, _ml_models,
-                                                      _inference_lock=state._inference_lock)
-                            else:
-                                new = compute_crop(state.models, cr3, state.all_people,
-                                                   _inference_lock=state._inference_lock,
-                                                   margin_ratio=margin)
+                            new = _compute(cr3)
                             if new is None:
                                 continue
                             if not new.get("ml_crop"):
                                 recompute_crop(new, margin)
-                            item.update({k: v for k, v in new.items() if k != "cr3_path"})
+                            with state._prefetch_cv:
+                                while state._prefetch_q.qsize() >= state.prefetch:
+                                    state._prefetch_cv.wait()
+                            state._prefetch_q.put(new)
                         except Exception as e:
                             print(f"  Warning: buffer reprocess failed for {cr3.name}: {e}")
+
+                    if found_sentinel:
+                        state._prefetch_q.put(None)
 
                 threading.Thread(target=_recompute, daemon=True).start()
 
