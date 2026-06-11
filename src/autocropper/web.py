@@ -142,8 +142,16 @@ class ReviewState:
                 use_ml = self.ml_mode and self.ml_dataset is not None and _ml_models_ready.is_set()
                 margin = self.margin
             if use_ml:
-                return predict_ml_crop(cr3, self.ml_dataset, _ml_models,
-                                       _inference_lock=self._inference_lock)
+                result = predict_ml_crop(cr3, self.ml_dataset, _ml_models,
+                                         _inference_lock=self._inference_lock)
+                if result is None:
+                    # ML couldn't produce a crop (no person, no face, too few neighbours,
+                    # or model failure) — fall back to classic margin crop.
+                    # The classic result has no ml_crop key so the buffer dot stays blue.
+                    print(f"  ML: no crop for {cr3.name}, falling back to classic crop")
+                    return compute_crop(self.models, cr3, self.all_people,
+                                        _inference_lock=self._inference_lock, margin_ratio=margin)
+                return result
             return compute_crop(self.models, cr3, self.all_people,
                                 _inference_lock=self._inference_lock, margin_ratio=margin)
 

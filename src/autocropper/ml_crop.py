@@ -138,7 +138,7 @@ def _mask_bbox(mask):
 
 # ---- Feature extraction ----
 
-def extract_features(image, models):
+def extract_features(image, models, name=None):
     """Extract features from an image for ML crop matching.
 
     Returns a 4-tuple (mask_cropped, face_centroid, aspect_ratio, mask_bbox) or None.
@@ -150,8 +150,11 @@ def extract_features(image, models):
 
     Returns None if the image cannot be processed (not exactly 1 person,
     face not detected, empty mask).
+
+    name: optional filename used in warning messages.
     """
     from .main import detect_people_with_masks
+    label = f" [{name}]" if name else ""
 
     gdino_processor = models[0]
     gdino_model     = models[1]
@@ -173,31 +176,35 @@ def extract_features(image, models):
     try:
         full_mask = _run_sam(image, bbox, sam_processor, sam_model, device)
     except Exception as e:
-        print(f"  SAM failed: {e}")
+        print(f"  SAM (person segmentation){label} failed: {e}")
         return None
     t2 = time.perf_counter()
     bbox_mask = _mask_bbox(full_mask)
     if bbox_mask is None:
+        print(f"  SAM (person segmentation){label}: returned an empty mask")
         return None
     mx1, my1, mx2, my2 = bbox_mask
     mask_w = mx2 - mx1
     mask_h = my2 - my1
     if mask_w <= 0 or mask_h <= 0:
+        print(f"  SAM (person segmentation){label}: degenerate mask bbox ({mask_w}×{mask_h})")
         return None
 
     try:
         kps, scores = _run_vitpose(image, bbox, vitpose_processor, vitpose_model, device)
     except Exception as e:
-        print(f"  ViTPose failed: {e}")
+        print(f"  ViTPose (face keypoint detection){label} failed: {e}")
         return None
     t3 = time.perf_counter()
     if kps is None:
+        print(f"  ViTPose (face keypoint detection){label}: no poses returned")
         return None
 
     print(f"    gdino={t1-t0:.2f}s  sam={t2-t1:.2f}s  vitpose={t3-t2:.2f}s")
 
     face_indices = [i for i in FACE_KP_INDICES if scores[i] > FACE_KP_THRESHOLD]
     if not face_indices:
+        print(f"  ViTPose (face keypoint detection){label}: no face keypoints above confidence threshold — needed to centre the crop on the subject")
         return None
 
     face_xy = kps[face_indices]
@@ -208,13 +215,14 @@ def extract_features(image, models):
     return mask_cropped, (fc_x, fc_y), float(w) / float(h), (mx1, my1, mx2, my2)
 
 
-def build_training_record(image, crop_xyxy_display, models):
+def build_training_record(image, crop_xyxy_display, models, name=None):
     """Build one TrainingRecord from an image with its known crop in display pixels.
 
     Returns None if the image cannot be processed.
+    name: optional filename used in warning messages.
     """
     image_inf, inf_scale = _resize_for_inference(image)
-    result = extract_features(image_inf, models)
+    result = extract_features(image_inf, models, name=name)
     if result is None:
         return None
 
@@ -321,7 +329,7 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
 
     lock_ctx = _inference_lock if _inference_lock is not None else contextlib.nullcontext()
     with lock_ctx:
-        result = extract_features(image_inf, models)
+        result = extract_features(image_inf, models, name=cr3_path.name)
     t_inf = time.perf_counter()
     if result is None:
         return None

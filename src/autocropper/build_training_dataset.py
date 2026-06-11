@@ -117,7 +117,7 @@ def main():
             continue
 
         try:
-            record = build_training_record(image, crop, models)
+            record = build_training_record(image, crop, models, name=path.name)
         except Exception as e:
             print(f"  Warning: {path.name} — detection error: {e}")
             skipped_detection += 1
