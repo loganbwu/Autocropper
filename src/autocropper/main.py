@@ -37,6 +37,37 @@ def extract_preview_image(cr3_path: Path) -> Image.Image:
         return Image.fromarray(thumb.data).convert("RGB")
 
 
+def _materialize_meta_params(model: torch.nn.Module, device) -> None:
+    """Initialize meta-device parameters and buffers left by missing checkpoint keys.
+
+    When a HuggingFace checkpoint omits some weights (e.g. GroundingDINO's
+    bbox_embed decoder heads), accelerate leaves those tensors on the 'meta'
+    device.  Its pre-forward hook then raises because they don't match the
+    execution device.  Replacing them with zeros on the real device fixes this;
+    the weights are effectively randomly initialised by the model __init__ but
+    those layers are not used for detection outputs we rely on.
+    """
+    for name, param in list(model.named_parameters()):
+        if not param.is_meta:
+            continue
+        *path, attr = name.split('.')
+        submod = model
+        for part in path:
+            submod = getattr(submod, part)
+        setattr(submod, attr, torch.nn.Parameter(
+            torch.zeros(param.shape, dtype=param.dtype, device=device),
+            requires_grad=param.requires_grad,
+        ))
+    for name, buf in list(model.named_buffers()):
+        if not buf.is_meta:
+            continue
+        *path, attr = name.split('.')
+        submod = model
+        for part in path:
+            submod = getattr(submod, part)
+        submod.register_buffer(attr, torch.zeros(buf.shape, dtype=buf.dtype, device=device))
+
+
 def load_models():
     from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 
@@ -62,6 +93,7 @@ def load_models():
             GDINO_MODEL, device_map=device
         ).eval()
 
+    _materialize_meta_params(gdino_model, device)
     return gdino_processor, gdino_model
 
 
@@ -94,6 +126,8 @@ def load_ml_models():
         vitpose_processor = AutoProcessor.from_pretrained(VITPOSE_MODEL)
         vitpose_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_MODEL, device_map=device).eval()
 
+    _materialize_meta_params(sam_model, device)
+    _materialize_meta_params(vitpose_model, device)
     print("ML models (SAM + ViTPose) loaded.")
     return gdino_processor, gdino_model, sam_processor, sam_model, vitpose_processor, vitpose_model
 
