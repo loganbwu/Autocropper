@@ -132,7 +132,15 @@ def load_ml_models(gdino_models=None):
 
     vitpose_model = _load_pretrained(VitPoseForPoseEstimation, VITPOSE_MODEL, device, local_only=True)
 
-    print("ML models (SAM + ViTPose) loaded.")
+    # Compile models to optimised MPS/CUDA kernels. First call per model incurs
+    # a one-time compilation cost (~10–30s); subsequent calls are faster.
+    try:
+        gdino_model = torch.compile(gdino_model)
+        sam_model   = torch.compile(sam_model)
+        vitpose_model = torch.compile(vitpose_model)
+        print("ML models (SAM + ViTPose) loaded and compiled.")
+    except Exception as e:
+        print(f"ML models (SAM + ViTPose) loaded (torch.compile skipped: {e}).")
     return gdino_processor, gdino_model, sam_processor, sam_model, vitpose_processor, vitpose_model
 
 
