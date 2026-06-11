@@ -163,16 +163,15 @@ def _run_sam2(image_pil, bbox, sam2_processor, sam2_model, device):
     ).to(device)
     with torch.no_grad():
         outputs = sam2_model(**inputs)
-    masks, scores, _ = sam2_processor.post_process_masks(
+    # post_process_masks returns list[Tensor[obj, num_masks, H, W]], one per image
+    masks = sam2_processor.post_process_masks(
         outputs.pred_masks,
         inputs["original_sizes"],
-        inputs["reshaped_input_sizes"],
     )
-    # masks[0]: (1, num_masks, H, W); pick highest-scored mask
-    mask_batch = masks[0][0]           # (num_masks, H, W)
-    score_batch = scores[0][0]         # (num_masks,)
-    best = int(score_batch.argmax())
-    return mask_batch[best].cpu().numpy().astype(bool)
+    # masks[0]: (1, num_masks, H, W) — single object, multiple candidate masks
+    # pick highest IoU score; iou_scores: [batch, obj, num_masks]
+    best = int(outputs.iou_scores[0, 0].argmax())
+    return masks[0][0, best].cpu().numpy().astype(bool)
 
 
 def _stack(*panels, gap=8):
