@@ -1,13 +1,14 @@
-"""Compare person segmentation across three detection strategies.
+"""Compare person segmentation across four strategies.
 
 Usage:
     diagnostic-masks <input_folder> <output_folder> [--n N]
 
-Produces a three-panel side-by-side JPEG for each image:
+Produces a four-panel side-by-side JPEG for each image:
 
-  Left   — GDINO bounding box → MobileSAM mask   (current pipeline)
-  Centre — YOLOv8-pose bbox   → MobileSAM mask   (faster detector, same SAM)
-  Right  — YOLOv8-seg mask directly               (no SAM at all)
+  Panel 1 — GDINO bbox → MobileSAM          (current pipeline)
+  Panel 2 — YOLOv8-pose bbox → MobileSAM    (faster detector, same SAM)
+  Panel 3 — YOLOv8-seg mask directly         (no SAM)
+  Panel 4 — GDINO bbox → SAM 2 tiny          (newer SAM, same detector)
 
 Overlay colours:
   Blue   — person mask (subject)
@@ -38,6 +39,8 @@ from .ml_crop import (
     _run_sam,
     _run_vitpose,
 )
+
+SAM2_MODEL = "facebook/sam2.1-hiera-tiny"
 
 _CR3_SUFFIXES = {".cr3"}
 _RASTER_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -142,6 +145,36 @@ def _yolo_seg_mask(results, original_idx, target_size):
     return np.array(mask_resized) > 127
 
 
+def _load_sam2(device):
+    """Load SAM 2.1 tiny from HuggingFace transformers."""
+    from transformers import Sam2Model, Sam2Processor
+    processor = Sam2Processor.from_pretrained(SAM2_MODEL)
+    model = Sam2Model.from_pretrained(SAM2_MODEL).to(device).eval()
+    return processor, model
+
+
+def _run_sam2(image_pil, bbox, sam2_processor, sam2_model, device):
+    """Return a boolean mask (H, W) using SAM 2.1 with a bbox prompt."""
+    x1, y1, x2, y2 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+    inputs = sam2_processor(
+        images=image_pil,
+        input_boxes=[[[x1, y1, x2, y2]]],
+        return_tensors="pt",
+    ).to(device)
+    with torch.no_grad():
+        outputs = sam2_model(**inputs)
+    masks, scores, _ = sam2_processor.post_process_masks(
+        outputs.pred_masks,
+        inputs["original_sizes"],
+        inputs["reshaped_input_sizes"],
+    )
+    # masks[0]: (1, num_masks, H, W); pick highest-scored mask
+    mask_batch = masks[0][0]           # (num_masks, H, W)
+    score_batch = scores[0][0]         # (num_masks,)
+    best = int(score_batch.argmax())
+    return mask_batch[best].cpu().numpy().astype(bool)
+
+
 def _stack(*panels, gap=8):
     total_w = sum(p.width for p in panels) + gap * (len(panels) - 1)
     h = max(p.height for p in panels)
@@ -155,7 +188,7 @@ def _stack(*panels, gap=8):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Three-panel diagnostic comparing GDINO, YOLOv8-pose, and YOLOv8-seg."
+        description="Four-panel diagnostic comparing GDINO/YOLOv8 detectors with MobileSAM/SAM2.1."
     )
     parser.add_argument("input_folder",  type=Path)
     parser.add_argument("output_folder", type=Path)
@@ -176,11 +209,15 @@ def main():
     print("Loading GDINO + MobileSAM + ViTPose...")
     models = load_ml_models()
     gdino_processor, gdino_model = models[0], models[1]
+    device = next(gdino_model.parameters()).device
 
     print("Loading YOLOv8-pose and YOLOv8-seg...")
     from ultralytics import YOLO
     yolo_pose = YOLO("yolov8n-pose.pt")
     yolo_seg  = YOLO("yolov8n-seg.pt")
+
+    print(f"Loading SAM 2.1 tiny ({SAM2_MODEL})...")
+    sam2_processor, sam2_model = _load_sam2(device)
     print("All models loaded.\n")
 
     for path in files:
@@ -194,7 +231,7 @@ def main():
         w_inf, h_inf  = image_inf.size
         image_np      = np.array(image_inf)
 
-        # ── Panel 1: GDINO → MobileSAM ──────────────────────────────────
+        # ── GDINO detection (shared by panels 1 and 4) ──────────────────
         gdino_bbox, gdino_kps = None, None
         try:
             boxes, _, _, _ = detect_people_with_masks(
@@ -210,7 +247,6 @@ def main():
                 # ViTPose keypoints
                 vp_proc = models[4]
                 vp_model = models[5]
-                device = next(gdino_model.parameters()).device
                 with torch.no_grad():
                     kps, scores = _run_vitpose(image_inf, gdino_bbox, vp_proc, vp_model, device)
                 if kps is not None:
@@ -221,11 +257,12 @@ def main():
         except Exception as e:
             print(f"    GDINO failed: {e}", file=sys.stderr)
 
+        # ── Panel 1: GDINO → MobileSAM ──────────────────────────────────
         if gdino_bbox is not None:
             panel1 = _sam_panel(image_inf, image_np, models, gdino_bbox, gdino_kps,
-                                 "GDINO → SAM")
+                                 "GDINO → MobileSAM")
         else:
-            panel1 = _no_detection_panel(image_inf, "GDINO → SAM  [no detection]")
+            panel1 = _no_detection_panel(image_inf, "GDINO → MobileSAM  [no detection]")
 
         # ── Panel 2: YOLOv8-pose → MobileSAM ───────────────────────────
         yolo_bbox, yolo_kps = None, None
@@ -269,8 +306,20 @@ def main():
             print(f"    YOLO-seg failed: {e}", file=sys.stderr)
             panel3 = _no_detection_panel(image_inf, "YOLOv8-seg  [error]")
 
+        # ── Panel 4: GDINO → SAM 2.1 tiny ───────────────────────────────
+        if gdino_bbox is not None:
+            try:
+                mask4 = _run_sam2(image_inf, gdino_bbox, sam2_processor, sam2_model, device)
+                panel4 = _make_overlay(image_np, mask4, bbox=gdino_bbox, face_kps=gdino_kps)
+                panel4 = _label(panel4, "GDINO → SAM 2.1 tiny")
+            except Exception as e:
+                print(f"    SAM 2.1 failed: {e}", file=sys.stderr)
+                panel4 = _no_detection_panel(image_inf, "GDINO → SAM 2.1  [error]")
+        else:
+            panel4 = _no_detection_panel(image_inf, "GDINO → SAM 2.1  [no detection]")
+
         out_path = out_dir / (path.stem + "_diagnostic.jpg")
-        _stack(panel1, panel2, panel3).save(out_path, format="JPEG", quality=88)
+        _stack(panel1, panel2, panel3, panel4).save(out_path, format="JPEG", quality=88)
         print(f"    → {out_path.name}")
 
     print(f"\nDone. {len(files)} images written to {out_dir}")
