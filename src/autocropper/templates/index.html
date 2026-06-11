@@ -180,7 +180,7 @@
     deciding = false;
   }
 
-  function updateBuffer(buffered, total) {
+  function updateBuffer(buffered, total, bufferTypes) {
     if (total !== undefined && total !== currentPrefetch) {
       currentPrefetch = total;
       const indicator = document.getElementById('buffer-indicator');
@@ -195,7 +195,9 @@
       if (inp && inp !== document.activeElement) inp.value = total;
     }
     document.querySelectorAll('.buf-dot').forEach((dot, i) => {
-      dot.classList.toggle('ready', i < buffered);
+      const ready = i < buffered;
+      dot.classList.toggle('ready', ready);
+      dot.classList.toggle('ml', ready && !!(bufferTypes && bufferTypes[i]));
     });
   }
 
@@ -248,7 +250,7 @@
       : 'Analysing images';
     document.getElementById('overlay-sub').textContent = sub;
     overlay.querySelector('.spinner').style.display = '';
-    updateBuffer(data.buffered || 0, data.prefetch);
+    updateBuffer(data.buffered || 0, data.prefetch, data.buffer_types);
     uiReady = false;
     deciding = false;
   }
@@ -263,7 +265,7 @@
     document.getElementById('progress-bar').style.width = pct + '%';
     document.getElementById('panel-orig').classList.remove('selected');
     document.getElementById('panel-crop').classList.remove('selected');
-    updateBuffer(data.buffered || 0, data.prefetch);
+    updateBuffer(data.buffered || 0, data.prefetch, data.buffer_types);
     // Show ML badge on crop panel when result came from ML mode
     document.getElementById('ml-badge').style.display = data.ml_crop ? '' : 'none';
     // Sync toggle state with server

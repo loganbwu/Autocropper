@@ -216,6 +216,7 @@ body {
 }
 
 .buf-dot.ready { background: var(--pale-blue); }
+.buf-dot.ready.ml { background: #90EE90; }
 
 #progress-bar-wrap {
   flex: 0 0 auto;

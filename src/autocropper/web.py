@@ -242,6 +242,9 @@ class ReviewState:
                     "auto_skipped": self.auto_skipped,
                 }
             buffered = self._prefetch_q.qsize()
+            # Peek at queue contents (internal deque) to get per-slot ML flag.
+            buffer_types = [bool(item.get("ml_crop")) for item in list(self._prefetch_q.queue)
+                            if item is not None]
             if self.status == "loading" or self.current is None:
                 return {
                     "status": "loading",
@@ -249,6 +252,7 @@ class ReviewState:
                     "producer_idx": self.producer_processed,
                     "total": self.total_eligible,
                     "buffered": buffered,
+                    "buffer_types": buffer_types,
                     "prefetch": self.prefetch,
                     "ml_mode": self.ml_mode,
                     "ml_dataset_loaded": self.ml_dataset is not None,
@@ -260,6 +264,7 @@ class ReviewState:
                 "idx": reviewed_count + 1,
                 "total": self.total_eligible,
                 "buffered": buffered,
+                "buffer_types": buffer_types,
                 "prefetch": self.prefetch,
                 "orig_b64": base64.b64encode(d["orig_bytes"]).decode(),
                 "crop_b64": base64.b64encode(d["crop_bytes"]).decode(),
