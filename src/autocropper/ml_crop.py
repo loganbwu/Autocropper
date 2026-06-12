@@ -26,8 +26,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-FACE_KP_INDICES = [0, 1, 2]          # COCO: nose, left_eye, right_eye
-HEAD_KP_INDICES = [3, 4]             # COCO: left_ear, right_ear (fallback for back-of-head)
+FACE_KP_INDICES = [0, 1, 2, 3, 4]   # COCO: nose, left_eye, right_eye, left_ear, right_ear
 FACE_KP_THRESHOLD = 0.3
 MASK_SIZE = 1024
 KNN_COMPARE_SIZE = 128                # masks are downsampled to this resolution for k-NN comparison
@@ -270,14 +269,9 @@ def extract_features(image, models, name=None, verbose=True):
 
     face_indices = [i for i in FACE_KP_INDICES if scores[i] > FACE_KP_THRESHOLD]
     if not face_indices:
-        face_indices = [i for i in HEAD_KP_INDICES if scores[i] > FACE_KP_THRESHOLD]
-        if face_indices:
-            if verbose:
-                print(f"{_YELLOW}  ViTPose{label}: no face keypoints — using ear keypoints as head centroid{_RESET}")
-        else:
-            if verbose:
-                print(f"{_YELLOW}  ViTPose{label}: no head keypoints above threshold — mask-only similarity will be used{_RESET}")
-            return mask_cropped, None, ar, (mx1, my1, mx2, my2)
+        if verbose:
+            print(f"{_YELLOW}  ViTPose (face keypoint detection){label}: no face keypoints above confidence threshold — mask-only similarity will be used{_RESET}")
+        return mask_cropped, None, ar, (mx1, my1, mx2, my2)
 
     face_xy = kps[face_indices]
     fc_x = float((np.mean(face_xy[:, 0]) - mx1) / mask_w)
@@ -298,6 +292,8 @@ def build_training_record(image, crop_xyxy_display, models, name=None, source_pa
     if result is None:
         return None
     mask_cropped, face_centroid, aspect_ratio, (mx1, my1, mx2, my2) = result
+    if face_centroid is None:
+        return None  # training records require a face centroid
     # Scale crop coordinates to inference resolution so all values are in the same space.
     crop_x1, crop_y1, crop_x2, crop_y2 = (c * inf_scale for c in crop_xyxy_display)
 
@@ -350,6 +346,14 @@ def _normalize_mask(mask):
     return out
 
 
+def _mask_iou(m1, m2):
+    union = float((m1 | m2).sum())
+    return float((m1 & m2).sum()) / union if union > 0 else 1.0
+
+
+def _face_dist(c1, c2):
+    return float(np.sqrt((c1[0] - c2[0]) ** 2 + (c1[1] - c2[1]) ** 2))
+
 
 # ---- k-NN helpers ----
 
@@ -365,10 +369,7 @@ def _get_ar_candidates(dataset, query_ar):
         if candidates:
             # Precompute stacked downsampled masks — one-time cost, reused for every photo with this AR.
             masks_small = np.stack([r.mask[::step, ::step] for r in candidates])
-            face_centroids = np.array(
-                [r.face_centroid if r.face_centroid is not None else (np.nan, np.nan)
-                 for r in candidates], dtype=np.float32
-            )
+            face_centroids = np.array([r.face_centroid for r in candidates], dtype=np.float32)
         else:
             masks_small = np.empty((0, KNN_COMPARE_SIZE, KNN_COMPARE_SIZE), dtype=bool)
             face_centroids = np.empty((0, 2), dtype=np.float32)
@@ -432,9 +433,7 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS):
         dists = 1.0 - ious
     else:
         qfc_arr = np.array(query_fc, dtype=np.float32)
-        raw_face_dists = np.sqrt(((face_centroids_arr - qfc_arr) ** 2).sum(axis=1))
-        # Candidates with no face centroid (NaN) get max face distance so mask similarity still contributes.
-        face_dists = np.where(np.isnan(raw_face_dists), 1.0, raw_face_dists)
+        face_dists = np.sqrt(((face_centroids_arr - qfc_arr) ** 2).sum(axis=1))
         dists = dataset.alpha * (1.0 - ious) + (1.0 - dataset.alpha) * face_dists
 
     top_idx = np.argpartition(dists, n)[:n]
