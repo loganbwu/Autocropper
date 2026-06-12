@@ -287,7 +287,7 @@ class ReviewState:
                     "ml_dataset_loaded": self.ml_dataset is not None,
                 }
             d = self.current
-            return {
+            state = {
                 "status": "ready",
                 "filename": d["cr3_path"].name,
                 "idx": reviewed_count + 1,
@@ -302,6 +302,14 @@ class ReviewState:
                 "ml_dataset_loaded": self.ml_dataset is not None,
                 "ml_models_ready": _ml_models_ready.is_set(),
             }
+            # Include the first buffered item so the browser can pre-compute its crop
+            # while the user reviews the current photo.
+            nxt = next((item for item in list(self._prefetch_q.queue) if item is not None), None)
+            if nxt:
+                state["next_orig_b64"] = base64.b64encode(nxt["orig_bytes"]).decode()
+                state["next_crop_coords"] = {"x1": nxt["x1"], "y1": nxt["y1"],
+                                             "x2": nxt["x2"], "y2": nxt["y2"]}
+            return state
 
 
 def create_app(initial_path: str = "", force: bool = False, all_people: bool = False,

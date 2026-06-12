@@ -142,6 +142,7 @@
   }
 
   function showStarting(stage, progress) {
+    _nextPrecomputed = null;
     const overlay = document.getElementById('overlay');
     overlay.classList.remove('hidden');
     overlay.querySelector('.spinner').style.display = '';
@@ -209,6 +210,7 @@
   }
 
   function showLoading(data) {
+    _nextPrecomputed = null;
     const overlay = document.getElementById('overlay');
     overlay.classList.remove('hidden');
     document.getElementById('overlay-title').textContent = 'Processing...';
@@ -224,23 +226,57 @@
   }
 
   let _currentCropCoords = null;
+  let _nextPrecomputed = null;  // Promise<{origSrc, cropSrc}> for the next image
+
+  function _canvasCrop(img, coords) {
+    const {x1, y1, x2, y2} = coords;
+    const c = document.createElement('canvas');
+    c.width  = Math.round(x2 - x1);
+    c.height = Math.round(y2 - y1);
+    c.getContext('2d').drawImage(img, -Math.round(x1), -Math.round(y1));
+    return c.toDataURL('image/jpeg', 0.92);
+  }
 
   function _applyCrop(coords) {
     _currentCropCoords = coords;
     const orig = document.getElementById('img-orig');
-    const {x1, y1, x2, y2} = coords;
-    const canvas = document.createElement('canvas');
-    canvas.width  = Math.round(x2 - x1);
-    canvas.height = Math.round(y2 - y1);
-    canvas.getContext('2d').drawImage(orig, -Math.round(x1), -Math.round(y1));
-    document.getElementById('img-crop').src = canvas.toDataURL('image/jpeg', 0.92);
+    document.getElementById('img-crop').src = _canvasCrop(orig, coords);
   }
 
-  function showImage(data) {
+  function _precomputeNext(orig_b64, crop_coords) {
+    _nextPrecomputed = new Promise((resolve) => {
+      const img = new Image();
+      img.onload  = () => resolve({ origSrc: img.src, cropSrc: _canvasCrop(img, crop_coords) });
+      img.onerror = () => resolve(null);
+      img.src = 'data:image/jpeg;base64,' + orig_b64;
+    });
+  }
+
+  async function showImage(data) {
+    let origSrc = 'data:image/jpeg;base64,' + data.orig_b64;
+    let cropSrc = null;
+
+    // Use pre-computed result if available (may still be resolving — await it)
+    if (_nextPrecomputed) {
+      const pre = await _nextPrecomputed;
+      _nextPrecomputed = null;
+      if (pre) { origSrc = pre.origSrc; cropSrc = pre.cropSrc; }
+    }
+
+    // Pre-compute wasn't ready — decode and crop now (overlay stays up during this)
+    if (!cropSrc) {
+      await new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => { origSrc = img.src; cropSrc = _canvasCrop(img, data.crop_coords); resolve(); };
+        img.src = origSrc;
+      });
+    }
+
+    // Reveal both panels simultaneously
     document.getElementById('overlay').classList.add('hidden');
-    const orig = document.getElementById('img-orig');
-    orig.onload = () => _applyCrop(data.crop_coords);
-    orig.src = 'data:image/jpeg;base64,' + data.orig_b64;
+    document.getElementById('img-orig').src = origSrc;
+    document.getElementById('img-crop').src = cropSrc;
+    _currentCropCoords = data.crop_coords;
     document.getElementById('filename').textContent = data.filename;
     document.getElementById('progress').textContent = `${data.idx} / ${data.total}`;
     const pct = data.total > 0 ? ((data.idx - 1) / data.total * 100) : 0;
@@ -254,6 +290,11 @@
     syncMlUi(data);
     uiReady = true;
     deciding = false;
+
+    // Kick off pre-compute for the next image while the user reviews this one
+    if (data.next_orig_b64) {
+      _precomputeNext(data.next_orig_b64, data.next_crop_coords);
+    }
   }
 
   // ── ML crop controls ────────────────────────────────────────
