@@ -202,8 +202,8 @@
         body: JSON.stringify({margin: pct}),
       });
       const data = await res.json();
-      if (data.crop_b64) {
-        document.getElementById('img-crop').src = 'data:image/jpeg;base64,' + data.crop_b64;
+      if (data.crop_coords) {
+        _applyCrop(data.crop_coords);
       }
     }, 400);
   }
@@ -223,10 +223,24 @@
     deciding = false;
   }
 
+  let _currentCropCoords = null;
+
+  function _applyCrop(coords) {
+    _currentCropCoords = coords;
+    const orig = document.getElementById('img-orig');
+    const {x1, y1, x2, y2} = coords;
+    const canvas = document.createElement('canvas');
+    canvas.width  = Math.round(x2 - x1);
+    canvas.height = Math.round(y2 - y1);
+    canvas.getContext('2d').drawImage(orig, -Math.round(x1), -Math.round(y1));
+    document.getElementById('img-crop').src = canvas.toDataURL('image/jpeg', 0.92);
+  }
+
   function showImage(data) {
     document.getElementById('overlay').classList.add('hidden');
-    document.getElementById('img-orig').src = 'data:image/jpeg;base64,' + data.orig_b64;
-    document.getElementById('img-crop').src = 'data:image/jpeg;base64,' + data.crop_b64;
+    const orig = document.getElementById('img-orig');
+    orig.onload = () => _applyCrop(data.crop_coords);
+    orig.src = 'data:image/jpeg;base64,' + data.orig_b64;
     document.getElementById('filename').textContent = data.filename;
     document.getElementById('progress').textContent = `${data.idx} / ${data.total}`;
     const pct = data.total > 0 ? ((data.idx - 1) / data.total * 100) : 0;

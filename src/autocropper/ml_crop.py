@@ -474,9 +474,6 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
     orig_buf = io.BytesIO()
     image.save(orig_buf, format="JPEG", quality=70)
 
-    crop_buf = io.BytesIO()
-    image.crop((int(x1), int(y1), int(x2), int(y2))).save(crop_buf, format="JPEG", quality=85)
-
     return {
         "cr3_path": cr3_path,
         "x1": x1, "y1": y1, "x2": x2, "y2": y2,
@@ -485,6 +482,5 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
         "raw_x2": float(mx2), "raw_y2": float(my2),
         "person_cx": person_cx,
         "orig_bytes": orig_buf.getvalue(),
-        "crop_bytes": crop_buf.getvalue(),
         "ml_crop": True,
     }

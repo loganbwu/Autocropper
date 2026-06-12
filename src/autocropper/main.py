@@ -574,9 +574,6 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lo
     orig_buf = io.BytesIO()
     img.save(orig_buf, format="JPEG", quality=70)
 
-    crop_buf = io.BytesIO()
-    img.crop((int(x1), int(y1), int(x2), int(y2))).save(crop_buf, format="JPEG", quality=85)
-
     return {
         "cr3_path": cr3_path,
         "x1": x1, "y1": y1, "x2": x2, "y2": y2,
@@ -584,7 +581,6 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lo
         "raw_x1": raw_x1, "raw_y1": raw_y1, "raw_x2": raw_x2, "raw_y2": raw_y2,
         "person_cx": person_cx,
         "orig_bytes": orig_buf.getvalue(),
-        "crop_bytes": crop_buf.getvalue(),
     }
 
 
@@ -603,11 +599,7 @@ def recompute_crop(d: dict, margin_ratio: float) -> None:
         d["raw_x1"], d["raw_y1"], d["raw_x2"], d["raw_y2"],
         d["w"], d["h"], d["person_cx"], margin_ratio,
     )
-    img = Image.open(io.BytesIO(d["orig_bytes"]))
-    crop_buf = io.BytesIO()
-    img.crop((int(x1), int(y1), int(x2), int(y2))).save(crop_buf, format="JPEG", quality=85)
     d["x1"], d["y1"], d["x2"], d["y2"] = x1, y1, x2, y2
-    d["crop_bytes"] = crop_buf.getvalue()
 
 
 def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = False,

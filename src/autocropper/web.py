@@ -330,7 +330,7 @@ class ReviewState:
                 "buffer_types": buffer_types,
                 "prefetch": self.prefetch,
                 "orig_b64": base64.b64encode(d["orig_bytes"]).decode(),
-                "crop_b64": base64.b64encode(d["crop_bytes"]).decode(),
+                "crop_coords": {"x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"]},
                 "ml_crop": bool(d.get("ml_crop")),
                 "ml_mode": self.ml_mode,
                 "ml_dataset_loaded": self.ml_dataset is not None,
@@ -516,13 +516,10 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
             d = state.current
             if d is None:
                 return jsonify({"ok": True})
-            if d.get("ml_crop"):
-                # Margin has no effect in ML mode — return current crop unchanged
-                crop_b64 = base64.b64encode(d["crop_bytes"]).decode()
-            else:
+            if not d.get("ml_crop"):
                 recompute_crop(d, margin)
-                crop_b64 = base64.b64encode(d["crop_bytes"]).decode()
-        return jsonify({"ok": True, "crop_b64": crop_b64})
+            crop_coords = {"x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"]}
+        return jsonify({"ok": True, "crop_coords": crop_coords})
 
     @app.route("/api/ml-dataset", methods=["POST"])
     def api_ml_dataset():
