@@ -458,25 +458,17 @@ def _merge_keywords(content, new_keywords):
 
 
 def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, angle=0, keywords=None):
-    import math
+    print(f"[write_xmp] x1={x1:.1f} y1={y1:.1f} x2={x2:.1f} y2={y2:.1f}  w={w} h={h}  angle={angle}")
     xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
 
     orientation = get_orientation(cr3_path)
 
-    if angle:
-        # Rotate the crop centre into the rotated-image coordinate frame so that
-        # Lightroom's CropLeft/Top/Right/Bottom (which are defined in the rotated
-        # frame) match what the user saw on screen.
-        θ = math.radians(angle)
-        cos_a, sin_a = math.cos(θ), math.sin(θ)
-        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-        cw, ch = x2 - x1, y2 - y1
-        rcx = w / 2 + (cx - w / 2) * cos_a + (cy - h / 2) * sin_a
-        rcy = h / 2 - (cx - w / 2) * sin_a + (cy - h / 2) * cos_a
-        nl, nt = (rcx - cw / 2) / w, (rcy - ch / 2) / h
-        nr, nb = (rcx + cw / 2) / w, (rcy + ch / 2) / h
-    else:
-        nl, nt, nr, nb = x1 / w, y1 / h, x2 / w, y2 / h
+    # The browser stores {x1,y1,x2,y2} as the unrotated rect in the original image
+    # coordinate system (identical to Lightroom's LTRB frame).  CropAngle then
+    # rotates that rect around its centre.  No centre transformation is needed —
+    # just normalise by W/H.  CropAngle is negated because the browser uses
+    # CW-positive while Lightroom uses CCW-positive.
+    nl, nt, nr, nb = x1 / w, y1 / h, x2 / w, y2 / h
 
     left, top, right, bottom = _display_to_sensor_crop(nl, nt, nr, nb, orientation)
 
@@ -522,7 +514,7 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, angle=0, keywords=None):
    <crs:CropTop>{top:.6f}</crs:CropTop>
    <crs:CropRight>{right:.6f}</crs:CropRight>
    <crs:CropBottom>{bottom:.6f}</crs:CropBottom>
-   <crs:CropAngle>{angle:.6f}</crs:CropAngle>
+   <crs:CropAngle>{-angle:.6f}</crs:CropAngle>
 {kw_block}  </rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>
