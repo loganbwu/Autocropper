@@ -95,7 +95,7 @@
     if (data.status === 'done')     { showDone(data); return; }
     if (data.status === 'loading')  { showLoading(data); return; }
     if (data.status === 'ready') {
-      if (data.idx === _currentImageIdx) {
+      if (data.filename === _currentFilename) {
         // Same image — buffer update or heartbeat. Refresh count; do not re-render.
         updateBuffer(data.buffered || 0, data.prefetch);
         return;
@@ -235,7 +235,7 @@
 
   let _currentCropCoords = null;
   let _origSize = null;
-  let _currentImageIdx = null;
+  let _currentFilename = null;
   let _dragState = null;
   let _cropImage = null;   // decoded Image for direct canvas draws
   let _cropCtx = null;     // canvas 2D context for img-crop
@@ -260,7 +260,7 @@
   }
 
   async function showImage(data) {
-    _currentImageIdx = data.idx;
+    _currentFilename = data.filename;
     const origSrc = 'data:image/jpeg;base64,' + data.orig_b64;
 
     await new Promise((resolve) => {
