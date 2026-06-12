@@ -533,9 +533,7 @@
       const ncw = cw * s, nch = ch * s;
       _currentCropCoords = _constrainCrop({x1: cx - ncw / 2, y1: cy - nch / 2, x2: cx + ncw / 2, y2: cy + nch / 2}, _cropAngle);
     } else {
-      // Horizontal scroll → rotate (±45° range)
-      _cropAngle = Math.max(-45, Math.min(45, _cropAngle - dx * 0.05));
-      _currentCropCoords = _constrainCrop(_currentCropCoords, _cropAngle);
+      // Rotation temporarily disabled
     }
 
     if (!_rafId) {
