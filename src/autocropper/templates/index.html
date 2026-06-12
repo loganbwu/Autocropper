@@ -474,8 +474,8 @@
     const cw = x2 - x1, ch = y2 - y1;
     const cropEl = document.getElementById('img-crop');
     const scale = cw / cropEl.clientWidth;
-    let nx1 = Math.round(x1 + (e.clientX - _dragState.startX) * scale);
-    let ny1 = Math.round(y1 + (e.clientY - _dragState.startY) * scale);
+    let nx1 = Math.round(x1 - (e.clientX - _dragState.startX) * scale);
+    let ny1 = Math.round(y1 - (e.clientY - _dragState.startY) * scale);
     nx1 = Math.max(0, Math.min(_origSize.w - cw, nx1));
     ny1 = Math.max(0, Math.min(_origSize.h - ch, ny1));
     _currentCropCoords = {x1: nx1, y1: ny1, x2: nx1 + cw, y2: ny1 + ch};
