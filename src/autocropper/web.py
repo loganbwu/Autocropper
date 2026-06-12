@@ -224,18 +224,24 @@ class ReviewState:
                 self.status = "ready"
             _notify_sse()
 
-            choice = self._decision_q.get()
+            decision = self._decision_q.get()
 
             # "_discard" is sent by api_ml_mode when the mode switches while an
             # image is displayed; just drop the current item and go back to waiting.
-            if choice == "_discard":
+            if decision == "_discard":
                 continue
+
+            choice, coords = decision  # coords: {x1,y1,x2,y2} or None (use server-side values)
 
             with self._lock:
                 if choice == "crop":
                     d = self.current
+                    x1 = coords["x1"] if coords else d["x1"]
+                    y1 = coords["y1"] if coords else d["y1"]
+                    x2 = coords["x2"] if coords else d["x2"]
+                    y2 = coords["y2"] if coords else d["y2"]
                     method_kw = "AutoCropper_ML" if d.get("ml_crop") else "AutoCropper_Margin"
-                    write_xmp(d["cr3_path"], d["x1"], d["y1"], d["x2"], d["y2"], d["w"], d["h"],
+                    write_xmp(d["cr3_path"], x1, y1, x2, y2, d["w"], d["h"],
                               keywords=["AutoCropper", method_kw])
                     self.accepted += 1
                     self._decided_paths.add(d["cr3_path"])
@@ -250,11 +256,12 @@ class ReviewState:
                 self.status = "loading"
             _notify_sse()
 
-    def decide(self, choice):
-        """Called from Flask request handler. choice: 'crop' | 'skip'."""
+    def decide(self, choice, coords=None):
+        """Called from Flask request handler. choice: 'crop' | 'skip'.
+        coords: optional {x1,y1,x2,y2} overriding server-side crop position."""
         if self.status != "ready":
             return False
-        self._decision_q.put(choice)
+        self._decision_q.put((choice, coords))
         return True
 
     def get_state(self):
@@ -475,7 +482,8 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
         choice = request.json.get("choice")
         if choice not in ("crop", "skip"):
             return jsonify({"error": "invalid choice"}), 400
-        state.decide(choice)
+        coords = request.json.get("coords")  # {x1,y1,x2,y2} or absent
+        state.decide(choice, coords)
         return jsonify({"ok": True})
 
     @app.route("/api/set-margin", methods=["POST"])

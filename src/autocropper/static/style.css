@@ -262,6 +262,8 @@ body {
   display: block;
 }
 
+#img-crop { cursor: grab; }
+
 .panel-label {
   position: absolute;
   top: 10px;
