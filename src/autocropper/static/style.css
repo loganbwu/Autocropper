@@ -94,12 +94,19 @@ body {
 #buffer-control {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
+  font-family: 'Oswald', sans-serif;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--grey);
+}
+
+.buffer-label {
+  margin-right: 4px;
 }
 
 #buffer-ready {
   color: var(--pale-blue);
-  font-family: 'Oswald', sans-serif;
   font-size: 13px;
   min-width: 16px;
   text-align: right;
@@ -107,11 +114,23 @@ body {
 
 .buffer-sep {
   color: #555;
-  margin: 0 3px;
+  margin: 0 1px;
   font-size: 13px;
 }
 
-#review-prefetch, #review-margin {
+#review-prefetch {
+  width: 46px;
+  background: transparent;
+  border: 1px solid #444;
+  color: var(--paragraph-text-color);
+  font-family: 'Oswald', sans-serif;
+  font-size: 13px;
+  padding: 2px 6px;
+  text-align: center;
+  text-transform: none;
+}
+
+#review-margin {
   width: 46px;
   background: transparent;
   border: 1px solid #444;
