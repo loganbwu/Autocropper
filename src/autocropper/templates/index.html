@@ -94,7 +94,19 @@
     if (data.status === 'starting') { showStarting(data.stage, data.progress); return; }
     if (data.status === 'done')     { showDone(data); return; }
     if (data.status === 'loading')  { showLoading(data); return; }
-    if (data.status === 'ready')    { showImage(data); return; }
+    if (data.status === 'ready') {
+      if (data.idx === _currentImageIdx) {
+        // Same image — buffer update or heartbeat. Refresh buffer count and
+        // kick off precompute if it hasn't happened yet; do not re-render.
+        updateBuffer(data.buffered || 0, data.prefetch);
+        if (data.next_orig_b64 && !_nextPrecomputed) {
+          _precomputeNext(data.next_orig_b64, data.next_crop_coords);
+        }
+        return;
+      }
+      showImage(data);
+      return;
+    }
   }
 
   // ── Folder picker ──────────────────────────────────────────
@@ -227,6 +239,7 @@
 
   let _currentCropCoords = null;
   let _origSize = null;
+  let _currentImageIdx = null;
   let _nextPrecomputed = null;  // Promise<{origSrc, cropSrc, w, h}> for the next image
   let _dragState = null;        // active drag: {startX, startY, baseCoords}
 
@@ -258,6 +271,7 @@
   }
 
   async function showImage(data) {
+    _currentImageIdx = data.idx;  // guard against re-entry from heartbeat SSEs
     let origSrc = 'data:image/jpeg;base64,' + data.orig_b64;
     let cropSrc = null;
 
