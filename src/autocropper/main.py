@@ -431,7 +431,34 @@ def read_xmp_crop(cr3_path: Path):
     return left * w, top * h, right * w, bottom * h
 
 
-def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
+def _keywords_block(keywords):
+    items = ''.join(f'\n       <rdf:li>{k}</rdf:li>' for k in keywords)
+    return f'   <dc:subject>\n    <rdf:Bag>{items}\n    </rdf:Bag>\n   </dc:subject>\n'
+
+
+def _merge_keywords(content, new_keywords):
+    """Merge new_keywords into the dc:subject bag in XMP content."""
+    subject_m = re.search(r'<dc:subject>.*?</dc:subject>', content, re.DOTALL)
+    if subject_m:
+        existing = set(re.findall(r'<rdf:li>([^<]+)</rdf:li>', subject_m.group()))
+        merged = sorted(existing | set(new_keywords))
+        block = _keywords_block(merged)
+        return content[:subject_m.start()] + block + content[subject_m.end():]
+    # No existing dc:subject — ensure dc namespace is declared, then insert
+    if 'xmlns:dc=' not in content:
+        content = content.replace(
+            'xmlns:crs=',
+            'xmlns:dc="http://purl.org/dc/elements/1.1/"\n    xmlns:crs=',
+            1,
+        )
+    last_close = content.rfind('</rdf:Description>')
+    if last_close != -1:
+        block = _keywords_block(sorted(new_keywords))
+        content = content[:last_close] + block + '  ' + content[last_close:]
+    return content
+
+
+def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, keywords=None):
     xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
 
     orientation = get_orientation(cr3_path)
@@ -463,14 +490,18 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
         if last_close != -1:
             content = content[:last_close] + crop_block + '  ' + content[last_close:]
 
+        if keywords:
+            content = _merge_keywords(content, keywords)
+
         xmp_path.write_text(content)
 
     else:
-        # Create new XMP file with crop data
+        kw_block = _keywords_block(sorted(keywords)) if keywords else ''
         xmp = f"""<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about=""
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
     xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">
    <crs:HasCrop>True</crs:HasCrop>
    <crs:CropLeft>{left:.6f}</crs:CropLeft>
@@ -478,7 +509,7 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h):
    <crs:CropRight>{right:.6f}</crs:CropRight>
    <crs:CropBottom>{bottom:.6f}</crs:CropBottom>
    <crs:CropAngle>0</crs:CropAngle>
-  </rdf:Description>
+{kw_block}  </rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>"""
@@ -596,7 +627,9 @@ def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = 
     if result is None:
         return False
 
-    write_xmp(cr3_path, result["x1"], result["y1"], result["x2"], result["y2"], result["w"], result["h"])
+    method_kw = "AutoCropper_ML" if result.get("ml_crop") else "AutoCropper_Margin"
+    write_xmp(cr3_path, result["x1"], result["y1"], result["x2"], result["y2"], result["w"], result["h"],
+              keywords=["AutoCropper", method_kw])
     return True
 
 

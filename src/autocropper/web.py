@@ -266,7 +266,9 @@ class ReviewState:
             with self._lock:
                 if choice == "crop":
                     d = self.current
-                    write_xmp(d["cr3_path"], d["x1"], d["y1"], d["x2"], d["y2"], d["w"], d["h"])
+                    method_kw = "AutoCropper_ML" if d.get("ml_crop") else "AutoCropper_Margin"
+                    write_xmp(d["cr3_path"], d["x1"], d["y1"], d["x2"], d["y2"], d["w"], d["h"],
+                              keywords=["AutoCropper", method_kw])
                     self.accepted += 1
                     self._decided_paths.add(d["cr3_path"])
                     print(f"{_GREEN}  Cropped:   {d['cr3_path'].name}{_RESET}")
