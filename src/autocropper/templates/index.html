@@ -96,12 +96,8 @@
     if (data.status === 'loading')  { showLoading(data); return; }
     if (data.status === 'ready') {
       if (data.idx === _currentImageIdx) {
-        // Same image — buffer update or heartbeat. Refresh buffer count and
-        // kick off precompute if it hasn't happened yet; do not re-render.
+        // Same image — buffer update or heartbeat. Refresh count; do not re-render.
         updateBuffer(data.buffered || 0, data.prefetch);
-        if (data.next_orig_b64 && !_nextPrecomputed) {
-          _precomputeNext(data.next_orig_b64, data.next_crop_coords);
-        }
         return;
       }
       showImage(data);
@@ -240,8 +236,7 @@
   let _currentCropCoords = null;
   let _origSize = null;
   let _currentImageIdx = null;
-  let _nextPrecomputed = null;  // Promise<{origSrc, cropSrc, w, h}> for the next image
-  let _dragState = null;        // active drag: {startX, startY, baseCoords}
+  let _dragState = null;
 
   function _canvasCrop(img, coords) {
     const {x1, y1, x2, y2} = coords;
@@ -258,45 +253,21 @@
     document.getElementById('img-crop').src = _canvasCrop(orig, coords);
   }
 
-  function _precomputeNext(orig_b64, crop_coords) {
-    _nextPrecomputed = new Promise((resolve) => {
-      const img = new Image();
-      img.onload  = () => resolve({
-        origSrc: img.src, cropSrc: _canvasCrop(img, crop_coords),
-        w: img.naturalWidth, h: img.naturalHeight,
-      });
-      img.onerror = () => resolve(null);
-      img.src = 'data:image/jpeg;base64,' + orig_b64;
-    });
-  }
-
   async function showImage(data) {
-    _currentImageIdx = data.idx;  // guard against re-entry from heartbeat SSEs
-    let origSrc = 'data:image/jpeg;base64,' + data.orig_b64;
+    _currentImageIdx = data.idx;
+    const origSrc = 'data:image/jpeg;base64,' + data.orig_b64;
     let cropSrc = null;
 
-    // Use pre-computed result if available (may still be resolving — await it)
-    if (_nextPrecomputed) {
-      const pre = await _nextPrecomputed;
-      _nextPrecomputed = null;
-      if (pre) { origSrc = pre.origSrc; cropSrc = pre.cropSrc; _origSize = {w: pre.w, h: pre.h}; }
-    }
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        cropSrc = _canvasCrop(img, data.crop_coords);
+        _origSize = {w: img.naturalWidth, h: img.naturalHeight};
+        resolve();
+      };
+      img.src = origSrc;
+    });
 
-    // Pre-compute wasn't ready — decode and crop now (overlay stays up during this)
-    if (!cropSrc) {
-      await new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-          origSrc = img.src;
-          cropSrc = _canvasCrop(img, data.crop_coords);
-          _origSize = {w: img.naturalWidth, h: img.naturalHeight};
-          resolve();
-        };
-        img.src = origSrc;
-      });
-    }
-
-    // Reveal both panels simultaneously
     _dragState = null;
     document.getElementById('overlay').classList.add('hidden');
     document.getElementById('img-orig').src = origSrc;
@@ -311,15 +282,9 @@
     updateBuffer(data.buffered || 0, data.prefetch);
     document.getElementById('ml-badge').style.display = data.ml_crop ? '' : 'none';
     document.getElementById('crop-hint-text').textContent = data.ml_crop ? 'Apply ML crop' : 'Apply margin crop';
-    // Sync toggle state with server
     syncMlUi(data);
     uiReady = true;
     deciding = false;
-
-    // Kick off pre-compute for the next image while the user reviews this one
-    if (data.next_orig_b64) {
-      _precomputeNext(data.next_orig_b64, data.next_crop_coords);
-    }
   }
 
   // ── ML crop controls ────────────────────────────────────────
