@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import argparse
-import contextlib
 import io
 import re
 import struct
@@ -517,20 +516,14 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, keywords=None):
         xmp_path.write_text(xmp)
 
 
-def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lock=None,
+def compute_crop(models, cr3_path: Path, all_people: bool = False,
                  margin_ratio: float = MARGIN_RATIO):
-    """Compute crop coordinates and return preview image bytes. Returns dict or None.
-
-    _inference_lock: optional threading.Lock to serialise GPU/MPS model calls when
-    multiple worker threads are used (concurrent inference corrupts MPS state).
-    """
+    """Compute crop coordinates and return preview image bytes. Returns dict or None."""
     orientation = get_orientation(cr3_path)
     img = apply_orientation(extract_preview_image(cr3_path), orientation)
     w, h = img.size
 
-    lock_ctx = _inference_lock if _inference_lock is not None else contextlib.nullcontext()
-    with lock_ctx:
-        boxes, hulls, w, h = detect_people_with_masks(models, img)
+    boxes, hulls, w, h = detect_people_with_masks(models, img)
 
     if not boxes and not hulls:
         return None
@@ -548,8 +541,7 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lo
         for i, box in enumerate(boxes):
             scaled_box = tuple(v * scale for v in box)
             try:
-                with lock_ctx:
-                    mask = _run_sam(image_inf, scaled_box, sam_processor, sam_model, device)
+                mask = _run_sam(image_inf, scaled_box, sam_processor, sam_model, device)
                 rows = np.where(mask.any(axis=1))[0]
                 cols = np.where(mask.any(axis=0))[0]
                 if len(rows) > 0 and len(cols) > 0:

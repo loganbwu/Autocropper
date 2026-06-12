@@ -2,8 +2,6 @@
 
 import argparse
 import base64
-import collections
-import itertools
 import json
 import queue
 import subprocess
@@ -39,7 +37,6 @@ from .ml_crop import TrainingDataset, predict_ml_crop
 PREFETCH_DEFAULT = 10  # default prefetch buffer; user can override in the UI
 PREFETCH_MIN = 1
 PREFETCH_MAX = 200
-PROCESSING_WORKERS = 4  # parallel exiftool + file-read threads; inference is still serialised
 
 MARGIN_DEFAULT = 0.20
 MARGIN_MIN = 0.00
@@ -138,7 +135,6 @@ class ReviewState:
         self._prefetch_cv = threading.Condition(threading.Lock())
         self._decision_q = queue.Queue()
         self._lock = threading.Lock()
-        self._inference_lock = threading.Lock()  # serialises GPU/MPS model calls across worker threads
         self._producer_gen = 0  # incremented on mode switch; old producer exits, new one starts
         self._decided_paths: set = set()  # CR3 paths the user has explicitly accepted or rejected
 
@@ -148,84 +144,54 @@ class ReviewState:
     def _producer(self, files, gen):
         """Worker thread. Exits early (without emitting sentinel) when _producer_gen changes."""
 
-        def _process(cr3):
-            with self._lock:
-                use_ml = self.ml_mode and self.ml_dataset is not None and _ml_models_ready.is_set()
-                margin = self.margin
-            if use_ml:
-                result = predict_ml_crop(cr3, self.ml_dataset, _ml_models,
-                                         _inference_lock=self._inference_lock)
-                if result is None:
-                    # ML couldn't produce a crop (no person, no face, too few neighbours,
-                    # or model failure) — fall back to classic margin crop.
-                    # The classic result has no ml_crop key so the buffer dot stays blue.
-                    print(f"{_YELLOW}  ML: no crop for {cr3.name}, falling back to classic crop{_RESET}")
-                    return compute_crop(self.models, cr3, self.all_people,
-                                        _inference_lock=self._inference_lock, margin_ratio=margin)
-                return result
-            return compute_crop(self.models, cr3, self.all_people,
-                                _inference_lock=self._inference_lock, margin_ratio=margin)
-
         try:
-            with ThreadPoolExecutor(max_workers=PROCESSING_WORKERS) as pool:
-                pending = collections.deque()
-                files_iter = iter(files)
+            for cr3 in files:
+                if self._producer_gen != gen:
+                    return
 
-                for cr3 in itertools.islice(files_iter, PROCESSING_WORKERS):
-                    pending.append((cr3, pool.submit(_process, cr3)))
-
-                while pending:
-                    # Exit immediately if a mode switch started a new producer.
-                    if self._producer_gen != gen:
-                        return
-
-                    cr3, future = pending.popleft()
-
-                    try:
-                        next_cr3 = next(files_iter)
-                        pending.append((next_cr3, pool.submit(_process, next_cr3)))
-                    except StopIteration:
-                        pass
-
-                    try:
-                        result = future.result()
-                    except Exception as e:
-                        print(f"{_RED}  Warning: skipping {cr3.name} — {e}{_RESET}")
-                        with self._lock:
-                            self.skipped += 1
-                            self.no_person_skipped += 1
-                            self.producer_processed += 1
-                        _notify_sse()
-                        continue
-
-                    # Exit after waiting for result if gen changed while we were blocked.
-                    if self._producer_gen != gen:
-                        return
-
-                    with self._lock:
-                        self.producer_processed += 1
+                with self._lock:
+                    use_ml = self.ml_mode and self.ml_dataset is not None and _ml_models_ready.is_set()
+                    margin = self.margin
+                try:
+                    if use_ml:
+                        result = predict_ml_crop(cr3, self.ml_dataset, _ml_models)
                         if result is None:
-                            self.skipped += 1
-                            self.no_person_skipped += 1
-                        elif result is False:
-                            self.skipped += 1
-                            self.noop_skipped += 1
+                            print(f"{_YELLOW}  ML: no crop for {cr3.name}, falling back to classic crop{_RESET}")
+                            result = compute_crop(self.models, cr3, self.all_people, margin_ratio=margin)
+                    else:
+                        result = compute_crop(self.models, cr3, self.all_people, margin_ratio=margin)
+                except Exception as e:
+                    print(f"{_RED}  Warning: skipping {cr3.name} — {e}{_RESET}")
+                    with self._lock:
+                        self.skipped += 1
+                        self.no_person_skipped += 1
+                        self.producer_processed += 1
                     _notify_sse()
+                    continue
 
+                with self._lock:
+                    self.producer_processed += 1
                     if result is None:
-                        print(f"{_YELLOW}  No person: {cr3.name}{_RESET}")
-                        continue
-                    if result is False:
-                        print(f"{_YELLOW}  No-op crop: {cr3.name}{_RESET}")
-                        continue
+                        self.skipped += 1
+                        self.no_person_skipped += 1
+                    elif result is False:
+                        self.skipped += 1
+                        self.noop_skipped += 1
+                _notify_sse()
 
-                    print(f"{_GREEN}  Ready:     {cr3.name}{_RESET}")
-                    with self._prefetch_cv:
-                        while self._prefetch_q.qsize() >= self.prefetch:
-                            self._prefetch_cv.wait()
-                    self._prefetch_q.put(result)
+                if result is None:
+                    print(f"{_YELLOW}  No person: {cr3.name}{_RESET}")
+                    continue
+                if result is False:
+                    print(f"{_YELLOW}  No-op crop: {cr3.name}{_RESET}")
+                    continue
+
+                print(f"{_GREEN}  Ready:     {cr3.name}{_RESET}")
+                with self._prefetch_cv:
+                    while self._prefetch_q.qsize() >= self.prefetch:
+                        self._prefetch_cv.wait()
+                self._prefetch_q.put(result)
         finally:
-            # Only the current-generation producer emits the session-end sentinel.
             if self._producer_gen == gen:
                 self._prefetch_q.put(None)
 

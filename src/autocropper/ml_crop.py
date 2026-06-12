@@ -380,13 +380,12 @@ def _get_ar_candidates(dataset, query_ar):
 
 # ---- Prediction ----
 
-def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference_lock=None):
+def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS):
     """Predict crop for cr3_path using case-based reasoning.
 
     Returns the same dict format as compute_crop(), with extra key 'ml_crop': True.
     Returns None if the image cannot be processed or fewer than n matching neighbours exist.
     """
-    import contextlib
     from .main import (
         apply_orientation, enforce_aspect_ratio, extract_preview_image,
         get_orientation, limit_zoom,
@@ -400,13 +399,10 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
     image_inf, inf_scale = _resize_for_inference(image)
     t_io = time.perf_counter()
 
-    lock_ctx = _inference_lock if _inference_lock is not None else contextlib.nullcontext()
-    t_lock_start = time.perf_counter()
-    with lock_ctx:
-        t_models_start = time.perf_counter()
-        result = extract_features(image_inf, models, name=cr3_path.name)
+    t_models_start = time.perf_counter()
+    result = extract_features(image_inf, models, name=cr3_path.name)
     t_inf = time.perf_counter()
-    t_lock_wait = t_models_start - t_lock_start
+    t_lock_wait = 0.0
     t_models = t_inf - t_models_start
     if result is None:
         return None
