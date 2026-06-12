@@ -38,7 +38,7 @@ from .ml_crop import TrainingDataset, predict_ml_crop
 
 PREFETCH_DEFAULT = 10  # default prefetch buffer; user can override in the UI
 PREFETCH_MIN = 1
-PREFETCH_MAX = 100
+PREFETCH_MAX = 200
 PROCESSING_WORKERS = 4  # parallel exiftool + file-read threads; inference is still serialised
 
 MARGIN_DEFAULT = 0.20

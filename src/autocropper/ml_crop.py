@@ -484,7 +484,6 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
         "raw_x1": float(mx1), "raw_y1": float(my1),
         "raw_x2": float(mx2), "raw_y2": float(my2),
         "person_cx": person_cx,
-        "img": image,
         "orig_bytes": orig_buf.getvalue(),
         "crop_bytes": crop_buf.getvalue(),
         "ml_crop": True,

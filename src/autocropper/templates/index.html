@@ -23,8 +23,7 @@
 <div id="header">
   <div id="filename"></div>
   <div id="buffer-control">
-    <div id="buffer-indicator"></div>
-    <input id="review-prefetch" type="number" min="{{ prefetch_min }}" max="{{ prefetch_max }}"
+    <span id="buffer-ready">0</span><span class="buffer-sep">/</span><input id="review-prefetch" type="number" min="{{ prefetch_min }}" max="{{ prefetch_max }}"
            value="{{ prefetch_default }}" title="Buffer size" oninput="setPrefetch(this.value)">
   </div>
   <div id="margin-control">
@@ -161,25 +160,13 @@
     deciding = false;
   }
 
-  function updateBuffer(buffered, total, bufferTypes) {
+  function updateBuffer(buffered, total) {
     if (total !== undefined && total !== currentPrefetch) {
       currentPrefetch = total;
-      const indicator = document.getElementById('buffer-indicator');
-      indicator.innerHTML = '';
-      for (let i = 0; i < total; i++) {
-        const dot = document.createElement('div');
-        dot.className = 'buf-dot';
-        indicator.appendChild(dot);
-      }
-      // Keep header input in sync with server-reported prefetch
       const inp = document.getElementById('review-prefetch');
       if (inp && inp !== document.activeElement) inp.value = total;
     }
-    document.querySelectorAll('.buf-dot').forEach((dot, i) => {
-      const ready = i < buffered;
-      dot.classList.toggle('ready', ready);
-      dot.classList.toggle('ml', ready && !!(bufferTypes && bufferTypes[i]));
-    });
+    document.getElementById('buffer-ready').textContent = buffered;
   }
 
   let _prefetchTimer = null;
@@ -231,7 +218,7 @@
       : 'Analysing images';
     document.getElementById('overlay-sub').textContent = sub;
     overlay.querySelector('.spinner').style.display = '';
-    updateBuffer(data.buffered || 0, data.prefetch, data.buffer_types);
+    updateBuffer(data.buffered || 0, data.prefetch);
     uiReady = false;
     deciding = false;
   }
@@ -246,7 +233,7 @@
     document.getElementById('progress-bar').style.width = pct + '%';
     document.getElementById('panel-orig').classList.remove('selected');
     document.getElementById('panel-crop').classList.remove('selected');
-    updateBuffer(data.buffered || 0, data.prefetch, data.buffer_types);
+    updateBuffer(data.buffered || 0, data.prefetch);
     document.getElementById('ml-badge').style.display = data.ml_crop ? '' : 'none';
     document.getElementById('crop-hint-text').textContent = data.ml_crop ? 'Apply ML crop' : 'Apply margin crop';
     // Sync toggle state with server

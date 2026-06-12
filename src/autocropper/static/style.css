@@ -97,10 +97,18 @@ body {
   gap: 8px;
 }
 
-#buffer-indicator {
-  display: flex;
-  align-items: center;
-  gap: 3px;
+#buffer-ready {
+  color: var(--pale-blue);
+  font-family: 'Oswald', sans-serif;
+  font-size: 13px;
+  min-width: 16px;
+  text-align: right;
+}
+
+.buffer-sep {
+  color: #555;
+  margin: 0 3px;
+  font-size: 13px;
 }
 
 #review-prefetch, #review-margin {
@@ -207,16 +215,6 @@ body {
   letter-spacing: 0.04em;
 }
 
-.buf-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 1px;
-  background: #333;
-  transition: background 0.3s;
-}
-
-.buf-dot.ready { background: var(--pale-blue); }
-.buf-dot.ready.ml { background: #90EE90; }
 
 #progress-bar-wrap {
   flex: 0 0 auto;
