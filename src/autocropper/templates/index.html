@@ -50,7 +50,7 @@
     <div class="key-hint"><span class="key-badge">1</span> Keep original</div>
   </div>
   <div class="panel" id="panel-crop">
-    <img id="img-crop" src="" alt="">
+    <canvas id="img-crop"></canvas>
     <div class="key-hint"><span class="key-badge">2</span> <span id="crop-hint-text">Apply crop</span></div>
   </div>
   <div id="overlay">
@@ -237,42 +237,52 @@
   let _origSize = null;
   let _currentImageIdx = null;
   let _dragState = null;
+  let _cropImage = null;   // decoded Image for direct canvas draws
+  let _cropCtx = null;     // canvas 2D context for img-crop
+  let _rafId = null;       // pending requestAnimationFrame for drag
 
-  function _canvasCrop(img, coords) {
+  function _drawCrop(coords) {
+    if (!_cropImage || !_cropCtx) return;
     const {x1, y1, x2, y2} = coords;
-    const c = document.createElement('canvas');
-    c.width  = Math.round(x2 - x1);
-    c.height = Math.round(y2 - y1);
-    c.getContext('2d').drawImage(img, -Math.round(x1), -Math.round(y1));
-    return c.toDataURL('image/jpeg', 0.92);
+    const cw = Math.round(x2 - x1);
+    const ch = Math.round(y2 - y1);
+    const canvas = document.getElementById('img-crop');
+    if (canvas.width !== cw || canvas.height !== ch) {
+      canvas.width = cw;
+      canvas.height = ch;
+    }
+    _cropCtx.drawImage(_cropImage, -Math.round(x1), -Math.round(y1));
   }
 
   function _applyCrop(coords) {
     _currentCropCoords = coords;
-    const orig = document.getElementById('img-orig');
-    document.getElementById('img-crop').src = _canvasCrop(orig, coords);
+    _drawCrop(coords);
   }
 
   async function showImage(data) {
     _currentImageIdx = data.idx;
     const origSrc = 'data:image/jpeg;base64,' + data.orig_b64;
-    let cropSrc = null;
 
     await new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
-        cropSrc = _canvasCrop(img, data.crop_coords);
+        _cropImage = img;
         _origSize = {w: img.naturalWidth, h: img.naturalHeight};
         resolve();
       };
       img.src = origSrc;
     });
 
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
     _dragState = null;
+    const canvas = document.getElementById('img-crop');
+    canvas.width  = Math.round(data.crop_coords.x2 - data.crop_coords.x1);
+    canvas.height = Math.round(data.crop_coords.y2 - data.crop_coords.y1);
+    _cropCtx = canvas.getContext('2d');
     document.getElementById('overlay').classList.add('hidden');
     document.getElementById('img-orig').src = origSrc;
-    document.getElementById('img-crop').src = cropSrc;
     _currentCropCoords = data.crop_coords;
+    _cropCtx.drawImage(_cropImage, -Math.round(data.crop_coords.x1), -Math.round(data.crop_coords.y1));
     document.getElementById('filename').textContent = data.filename;
     document.getElementById('progress').textContent = `${data.idx} / ${data.total}`;
     const pct = data.total > 0 ? ((data.idx - 1) / data.total * 100) : 0;
@@ -453,12 +463,19 @@
     const cw = x2 - x1, ch = y2 - y1;
     const cropEl = document.getElementById('img-crop');
     const scale = cw / cropEl.clientWidth;
-    let nx1 = Math.round(x1 - (e.clientX - _dragState.startX) * scale);
-    let ny1 = Math.round(y1 - (e.clientY - _dragState.startY) * scale);
+    let nx1 = x1 - (e.clientX - _dragState.startX) * scale;
+    let ny1 = y1 - (e.clientY - _dragState.startY) * scale;
     nx1 = Math.max(0, Math.min(_origSize.w - cw, nx1));
     ny1 = Math.max(0, Math.min(_origSize.h - ch, ny1));
     _currentCropCoords = {x1: nx1, y1: ny1, x2: nx1 + cw, y2: ny1 + ch};
-    cropEl.src = _canvasCrop(document.getElementById('img-orig'), _currentCropCoords);
+    if (!_rafId) {
+      _rafId = requestAnimationFrame(() => {
+        _rafId = null;
+        const c = _currentCropCoords;
+        _cropCtx.clearRect(0, 0, cropEl.width, cropEl.height);
+        _cropCtx.drawImage(_cropImage, -Math.round(c.x1), -Math.round(c.y1));
+      });
+    }
   });
 
   document.addEventListener('mouseup', () => {

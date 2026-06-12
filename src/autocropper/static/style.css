@@ -262,7 +262,12 @@ body {
   display: block;
 }
 
-#img-crop { cursor: grab; }
+#img-crop {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  cursor: grab;
+}
 
 .panel-label {
   position: absolute;
