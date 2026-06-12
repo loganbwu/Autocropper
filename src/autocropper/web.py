@@ -179,10 +179,12 @@ class ReviewState:
                         self.noop_skipped += 1
 
                 if result is None:
+                    write_decline_marker(cr3)
                     _notify_sse()
                     print(f"{_YELLOW}  No person: {cr3.name}{_RESET}")
                     continue
                 if result is False:
+                    write_decline_marker(cr3)
                     _notify_sse()
                     print(f"{_YELLOW}  No-op crop: {cr3.name}{_RESET}")
                     continue
@@ -228,10 +230,9 @@ class ReviewState:
 
             # "_discard" is sent by api_ml_mode when the mode switches while an
             # image is displayed; just drop the current item and go back to waiting.
-            if decision == "_discard":
-                continue
-
-            choice, coords = decision  # coords: {x1,y1,x2,y2} or None (use server-side values)
+            choice, coords, angle = decision
+            if choice == "_discard":
+                continue  # coords: {x1,y1,x2,y2} or None; angle: degrees
 
             with self._lock:
                 if choice == "crop":
@@ -242,6 +243,7 @@ class ReviewState:
                     y2 = coords["y2"] if coords else d["y2"]
                     method_kw = "AutoCropper_ML" if d.get("ml_crop") else "AutoCropper_Margin"
                     write_xmp(d["cr3_path"], x1, y1, x2, y2, d["w"], d["h"],
+                              angle=angle or 0,
                               keywords=["AutoCropper", method_kw])
                     self.accepted += 1
                     self._decided_paths.add(d["cr3_path"])
@@ -256,12 +258,13 @@ class ReviewState:
                 self.status = "loading"
             _notify_sse()
 
-    def decide(self, choice, coords=None):
+    def decide(self, choice, coords=None, angle=0):
         """Called from Flask request handler. choice: 'crop' | 'skip'.
-        coords: optional {x1,y1,x2,y2} overriding server-side crop position."""
+        coords: optional {x1,y1,x2,y2} overriding server-side crop position.
+        angle: crop rotation in degrees (CCW positive)."""
         if self.status != "ready":
             return False
-        self._decision_q.put((choice, coords))
+        self._decision_q.put((choice, coords, angle))
         return True
 
     def get_state(self):
@@ -476,7 +479,8 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
         if choice not in ("crop", "skip"):
             return jsonify({"error": "invalid choice"}), 400
         coords = request.json.get("coords")  # {x1,y1,x2,y2} or absent
-        state.decide(choice, coords)
+        angle  = request.json.get("angle", 0)
+        state.decide(choice, coords, angle)
         return jsonify({"ok": True})
 
     @app.route("/api/set-margin", methods=["POST"])
@@ -558,7 +562,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 # If an image was on screen, unblock the consumer so it stops waiting
                 # for a user decision and goes back to reading from the queue.
                 if current_item is not None:
-                    state._decision_q.put("_discard")
+                    state._decision_q.put(("_discard", None, 0))
 
                 # Drain the buffer entirely; the new producer will repopulate it.
                 while True:
