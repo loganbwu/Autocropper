@@ -177,12 +177,13 @@ class ReviewState:
                     elif result is False:
                         self.skipped += 1
                         self.noop_skipped += 1
-                _notify_sse()
 
                 if result is None:
+                    _notify_sse()
                     print(f"{_YELLOW}  No person: {cr3.name}{_RESET}")
                     continue
                 if result is False:
+                    _notify_sse()
                     print(f"{_YELLOW}  No-op crop: {cr3.name}{_RESET}")
                     continue
 
@@ -191,6 +192,7 @@ class ReviewState:
                     while self._prefetch_q.qsize() >= self.prefetch:
                         self._prefetch_cv.wait()
                 self._prefetch_q.put(result)
+                _notify_sse()
         finally:
             if self._producer_gen == gen:
                 self._prefetch_q.put(None)
