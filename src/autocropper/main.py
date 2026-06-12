@@ -457,13 +457,28 @@ def _merge_keywords(content, new_keywords):
     return content
 
 
-def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, keywords=None):
+def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, angle=0, keywords=None):
+    import math
     xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
 
     orientation = get_orientation(cr3_path)
-    left, top, right, bottom = _display_to_sensor_crop(
-        x1 / w, y1 / h, x2 / w, y2 / h, orientation
-    )
+
+    if angle:
+        # Rotate the crop centre into the rotated-image coordinate frame so that
+        # Lightroom's CropLeft/Top/Right/Bottom (which are defined in the rotated
+        # frame) match what the user saw on screen.
+        θ = math.radians(angle)
+        cos_a, sin_a = math.cos(θ), math.sin(θ)
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        cw, ch = x2 - x1, y2 - y1
+        rcx = w / 2 + (cx - w / 2) * cos_a + (cy - h / 2) * sin_a
+        rcy = h / 2 - (cx - w / 2) * sin_a + (cy - h / 2) * cos_a
+        nl, nt = (rcx - cw / 2) / w, (rcy - ch / 2) / h
+        nr, nb = (rcx + cw / 2) / w, (rcy + ch / 2) / h
+    else:
+        nl, nt, nr, nb = x1 / w, y1 / h, x2 / w, y2 / h
+
+    left, top, right, bottom = _display_to_sensor_crop(nl, nt, nr, nb, orientation)
 
     crop_block = (
         f'   <crs:HasCrop>True</crs:HasCrop>\n'
@@ -471,7 +486,7 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, keywords=None):
         f'   <crs:CropTop>{top:.6f}</crs:CropTop>\n'
         f'   <crs:CropRight>{right:.6f}</crs:CropRight>\n'
         f'   <crs:CropBottom>{bottom:.6f}</crs:CropBottom>\n'
-        f'   <crs:CropAngle>0</crs:CropAngle>\n'
+        f'   <crs:CropAngle>{angle:.6f}</crs:CropAngle>\n'
     )
 
     if xmp_path.exists():
@@ -507,7 +522,7 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, keywords=None):
    <crs:CropTop>{top:.6f}</crs:CropTop>
    <crs:CropRight>{right:.6f}</crs:CropRight>
    <crs:CropBottom>{bottom:.6f}</crs:CropBottom>
-   <crs:CropAngle>0</crs:CropAngle>
+   <crs:CropAngle>{angle:.6f}</crs:CropAngle>
 {kw_block}  </rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>
