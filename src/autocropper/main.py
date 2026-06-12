@@ -136,7 +136,7 @@ def load_ml_models(gdino_models=None):
 
 
 def detect_people_with_masks(models, image: Image.Image):
-    gdino_processor, gdino_model = models
+    gdino_processor, gdino_model = models[0], models[1]
     device = next(gdino_model.parameters()).device
 
     w, h = image.size
@@ -507,6 +507,30 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lo
     if not all_people:
         boxes, hulls = select_main_person(boxes, hulls)
 
+    # Refine hulls with SAM 2.1 pixel-accurate masks when models include SAM
+    if len(models) >= 4 and models[2] is not None:
+        from .ml_crop import _resize_for_inference, _run_sam
+        sam_processor, sam_model = models[2], models[3]
+        device = next(sam_model.parameters()).device
+        image_inf, scale = _resize_for_inference(img)
+        refined_hulls = []
+        for i, box in enumerate(boxes):
+            scaled_box = tuple(v * scale for v in box)
+            try:
+                with lock_ctx:
+                    mask = _run_sam(image_inf, scaled_box, sam_processor, sam_model, device)
+                rows = np.where(mask.any(axis=1))[0]
+                cols = np.where(mask.any(axis=0))[0]
+                if len(rows) > 0 and len(cols) > 0:
+                    my1, my2 = rows[0] / scale, rows[-1] / scale
+                    mx1, mx2 = cols[0] / scale, cols[-1] / scale
+                    refined_hulls.append(np.array([[mx1, my1], [mx2, my1], [mx2, my2], [mx1, my2]]))
+                else:
+                    refined_hulls.append(hulls[i])
+            except Exception:
+                refined_hulls.append(hulls[i])
+        hulls = refined_hulls
+
     raw_x1, raw_y1, raw_x2, raw_y2 = merged_envelope(boxes, hulls)
     person_cx = (raw_x1 + raw_x2) / 2
 
@@ -727,7 +751,7 @@ def main():
     if not cr3_files:
         raise SystemExit(f"No CR3 files found under: {root}")
 
-    models = load_models()
+    models = load_ml_models()
 
     processed = 0
     skipped = 0
