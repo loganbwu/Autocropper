@@ -313,7 +313,8 @@ def select_main_person(boxes, keypoints):
     return [boxes[idx]], main_kps
 
 
-CROP_TAGS = ('HasCrop', 'CropLeft', 'CropTop', 'CropRight', 'CropBottom', 'CropAngle')
+CROP_TAGS = ('HasCrop', 'CropLeft', 'CropTop', 'CropRight', 'CropBottom', 'CropAngle',
+             'CropConstrainToWarp', 'CropConstrainToUnitSquare')
 
 
 def has_existing_crop(cr3_path: Path):
@@ -472,6 +473,11 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, angle=0, keywords=None):
 
     left, top, right, bottom = _display_to_sensor_crop(nl, nt, nr, nb, orientation)
 
+    rotation_tags = (
+        '   <crs:CropConstrainToWarp>0</crs:CropConstrainToWarp>\n'
+        '   <crs:CropConstrainToUnitSquare>1</crs:CropConstrainToUnitSquare>\n'
+    ) if angle else ''
+
     crop_block = (
         f'   <crs:HasCrop>True</crs:HasCrop>\n'
         f'   <crs:CropLeft>{left:.6f}</crs:CropLeft>\n'
@@ -479,6 +485,7 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, angle=0, keywords=None):
         f'   <crs:CropRight>{right:.6f}</crs:CropRight>\n'
         f'   <crs:CropBottom>{bottom:.6f}</crs:CropBottom>\n'
         f'   <crs:CropAngle>{-angle:.6f}</crs:CropAngle>\n'
+        + rotation_tags
     )
 
     if xmp_path.exists():
@@ -515,7 +522,7 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, angle=0, keywords=None):
    <crs:CropRight>{right:.6f}</crs:CropRight>
    <crs:CropBottom>{bottom:.6f}</crs:CropBottom>
    <crs:CropAngle>{-angle:.6f}</crs:CropAngle>
-{kw_block}  </rdf:Description>
+{rotation_tags}{kw_block}  </rdf:Description>
  </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>"""
