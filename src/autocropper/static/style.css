@@ -245,13 +245,9 @@ body {
   justify-content: center;
   padding: 12px;
   position: relative;
-  cursor: pointer;
-  transition: background 0.1s;
 }
 
 .panel:first-child { border-right: 1px solid #333; }
-
-.panel:hover { background: #1a1a1a; }
 
 .panel.selected {
   background: #161e20;
