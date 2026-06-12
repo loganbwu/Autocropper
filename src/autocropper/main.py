@@ -579,11 +579,20 @@ def recompute_crop(d: dict, margin_ratio: float) -> None:
     d["crop_bytes"] = crop_buf.getvalue()
 
 
-def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = False):
+def process_cr3(models, cr3_path: Path, force: bool = False, all_people: bool = False,
+                dataset=None):
     if not force and has_existing_crop(cr3_path):
         return False
 
-    result = compute_crop(models, cr3_path, all_people)
+    result = None
+    if dataset is not None:
+        from .ml_crop import predict_ml_crop
+        result = predict_ml_crop(cr3_path, dataset, models)
+        if result is None:
+            print(f"  ML: no crop for {cr3_path.name}, falling back to classic crop")
+
+    if result is None:
+        result = compute_crop(models, cr3_path, all_people)
     if result is None:
         return False
 
@@ -740,6 +749,10 @@ def main():
         action="store_true",
         help="Crop to include all detected people (default: crop to main person only)",
     )
+    parser.add_argument(
+        "--dataset", type=Path, default=None, metavar="FILE",
+        help="Training dataset (.pkl) for ML crop prediction; falls back to classic crop when absent or on failure",
+    )
 
     args = parser.parse_args()
     root = args.path.expanduser().resolve()
@@ -750,6 +763,16 @@ def main():
     cr3_files = find_cr3_files(root)
     if not cr3_files:
         raise SystemExit(f"No CR3 files found under: {root}")
+
+    dataset = None
+    if args.dataset:
+        from .ml_crop import TrainingDataset
+        dataset_path = args.dataset.expanduser().resolve()
+        if not dataset_path.exists():
+            raise SystemExit(f"Dataset file not found: {dataset_path}")
+        print(f"Loading dataset {dataset_path.name}...")
+        dataset = TrainingDataset.load(dataset_path)
+        print(f"  {len(dataset.records)} records loaded.")
 
     models = load_ml_models()
 
@@ -762,7 +785,8 @@ def main():
             skipped += 1
             continue
 
-        result = process_cr3(models, cr3, force=args.force, all_people=args.all_people)
+        result = process_cr3(models, cr3, force=args.force, all_people=args.all_people,
+                              dataset=dataset)
         if result:
             processed += 1
         else:
