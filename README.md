@@ -32,13 +32,15 @@ Opens a browser-based review interface. Select a folder of CR3 files, then step 
 | `1` | Keep original (no crop) |
 | `2` | Apply crop |
 
-The header controls adjust the prefetch buffer size and crop margin in real time. Accepted crops are written as XMP sidecars immediately; photos already reviewed (XMP with `HasCrop=True`) are skipped on subsequent runs.
+Before pressing `2`, the crop panel is draggable — click and drag to pan the crop window and fine-tune the framing. The adjusted position is saved to the XMP sidecar.
+
+The header controls adjust the prefetch buffer size and crop margin in real time. The buffer indicator shows how many crops are ready (e.g. `4 / 10`); the second number is editable. Accepted crops are written as XMP sidecars immediately; photos already reviewed (XMP with `HasCrop=True`) are skipped on subsequent runs.
 
 #### ML crop mode (web UI)
 
 Upload a training dataset (`.pkl` file) using the **dataset** file picker in the header. Once loaded, toggle the **ML** button to switch between classic and ML crop modes. Switching modes restarts processing from the first unreviewed photo.
 
-The buffer indicator dots are **green** for ML crops and **blue** for classic margin crops. The crop panel label shows **Apply ML crop** or **Apply margin crop** accordingly.
+The buffer indicator shows **green** slots for ML crops and **blue** for classic margin crops. The crop panel label shows **Apply ML crop** or **Apply margin crop** accordingly.
 
 ### Batch CLI
 
