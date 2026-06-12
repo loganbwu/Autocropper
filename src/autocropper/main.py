@@ -486,7 +486,7 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, angle=0, keywords=None):
         f'   <crs:CropTop>{top:.6f}</crs:CropTop>\n'
         f'   <crs:CropRight>{right:.6f}</crs:CropRight>\n'
         f'   <crs:CropBottom>{bottom:.6f}</crs:CropBottom>\n'
-        f'   <crs:CropAngle>{angle:.6f}</crs:CropAngle>\n'
+        f'   <crs:CropAngle>{-angle:.6f}</crs:CropAngle>\n'
     )
 
     if xmp_path.exists():
