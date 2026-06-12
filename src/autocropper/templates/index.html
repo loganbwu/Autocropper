@@ -237,12 +237,13 @@
   let _currentCropCoords = null;
   let _origSize = null;
   let _currentFilename = null;
+  let _cropAngle = 0;      // rotation angle in degrees
   let _dragState = null;
   let _cropImage = null;   // decoded Image for direct canvas draws
   let _cropCtx = null;     // canvas 2D context for img-crop
-  let _rafId = null;       // pending requestAnimationFrame for drag
+  let _rafId = null;       // pending requestAnimationFrame for drag/scroll
 
-  function _drawCrop(coords) {
+  function _drawCrop(coords, angle) {
     if (!_cropImage || !_cropCtx) return;
     const {x1, y1, x2, y2} = coords;
     const cw = Math.round(x2 - x1);
@@ -251,13 +252,21 @@
     if (canvas.width !== cw || canvas.height !== ch) {
       canvas.width = cw;
       canvas.height = ch;
+    } else {
+      _cropCtx.clearRect(0, 0, cw, ch);
     }
-    _cropCtx.drawImage(_cropImage, -Math.round(x1), -Math.round(y1));
+    const cx = (x1 + x2) / 2;
+    const cy = (y1 + y2) / 2;
+    _cropCtx.save();
+    _cropCtx.translate(cw / 2, ch / 2);
+    if (angle) _cropCtx.rotate(angle * Math.PI / 180);
+    _cropCtx.drawImage(_cropImage, -cx, -cy);
+    _cropCtx.restore();
   }
 
   function _applyCrop(coords) {
     _currentCropCoords = coords;
-    _drawCrop(coords);
+    _drawCrop(coords, _cropAngle);
   }
 
   async function showImage(data) {
@@ -276,6 +285,7 @@
 
     if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
     _dragState = null;
+    _cropAngle = 0;
     const canvas = document.getElementById('img-crop');
     canvas.width  = Math.round(data.crop_coords.x2 - data.crop_coords.x1);
     canvas.height = Math.round(data.crop_coords.y2 - data.crop_coords.y1);
@@ -283,7 +293,7 @@
     document.getElementById('overlay').classList.add('hidden');
     document.getElementById('img-orig').src = origSrc;
     _currentCropCoords = data.crop_coords;
-    _cropCtx.drawImage(_cropImage, -Math.round(data.crop_coords.x1), -Math.round(data.crop_coords.y1));
+    _drawCrop(data.crop_coords, 0);
     document.getElementById('filename').textContent = data.filename;
     document.getElementById('progress').textContent = `${data.idx} / ${data.total}`;
     const pct = data.total > 0 ? ((data.idx - 1) / data.total * 100) : 0;
@@ -434,10 +444,11 @@
     document.getElementById('panel-crop').classList.toggle('selected', choice === 'crop');
 
     const coords = (choice === 'crop' && _currentCropCoords) ? _currentCropCoords : undefined;
+    const angle  = (choice === 'crop') ? _cropAngle : undefined;
     await fetch('/api/decide', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({choice, coords}),
+      body: JSON.stringify({choice, coords, angle}),
     });
 
     uiReady = false;
@@ -472,9 +483,7 @@
     if (!_rafId) {
       _rafId = requestAnimationFrame(() => {
         _rafId = null;
-        const c = _currentCropCoords;
-        _cropCtx.clearRect(0, 0, cropEl.width, cropEl.height);
-        _cropCtx.drawImage(_cropImage, -Math.round(c.x1), -Math.round(c.y1));
+        _drawCrop(_currentCropCoords, _cropAngle);
       });
     }
   });
@@ -484,6 +493,42 @@
     _dragState = null;
     document.getElementById('img-crop').style.cursor = '';
   });
+
+  // ── Scroll: zoom (vertical) and rotate (horizontal) ────────
+
+  document.getElementById('img-crop').addEventListener('wheel', (e) => {
+    if (!uiReady || !_currentCropCoords || !_origSize) return;
+    e.preventDefault();
+    // Normalise: trackpad gives pixels (deltaMode=0), mouse wheel gives lines (deltaMode=1)
+    const norm = e.deltaMode === 0 ? 1 : 30;
+    const dy = e.deltaY / norm;
+    const dx = e.deltaX / norm;
+
+    if (Math.abs(dy) >= Math.abs(dx)) {
+      // Vertical scroll → zoom (scroll up = tighter crop, scroll down = looser)
+      const {x1, y1, x2, y2} = _currentCropCoords;
+      const cw = x2 - x1, ch = y2 - y1;
+      const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+      const s = Math.max(
+        100 / Math.min(cw, ch),
+        Math.min(Math.min(_origSize.w / cw, _origSize.h / ch), 1 - dy * 0.003)
+      );
+      const ncw = cw * s, nch = ch * s;
+      const nx1 = Math.max(0, Math.min(_origSize.w - ncw, cx - ncw / 2));
+      const ny1 = Math.max(0, Math.min(_origSize.h - nch, cy - nch / 2));
+      _currentCropCoords = {x1: nx1, y1: ny1, x2: nx1 + ncw, y2: ny1 + nch};
+    } else {
+      // Horizontal scroll → rotate (±45° range)
+      _cropAngle = Math.max(-45, Math.min(45, _cropAngle - dx * 0.05));
+    }
+
+    if (!_rafId) {
+      _rafId = requestAnimationFrame(() => {
+        _rafId = null;
+        _drawCrop(_currentCropCoords, _cropAngle);
+      });
+    }
+  }, { passive: false });
 
   // ── Entry point ────────────────────────────────────────────
 
