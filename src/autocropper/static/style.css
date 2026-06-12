@@ -96,7 +96,7 @@ body {
   align-items: center;
   gap: 4px;
   font-family: 'Oswald', sans-serif;
-  font-size: 12px;
+  font-size: 13px;
   text-transform: uppercase;
   color: var(--grey);
 }
@@ -107,7 +107,6 @@ body {
 
 #buffer-ready {
   color: var(--pale-blue);
-  font-size: 13px;
   min-width: 16px;
   text-align: right;
 }
@@ -115,7 +114,6 @@ body {
 .buffer-sep {
   color: #555;
   margin: 0 1px;
-  font-size: 13px;
 }
 
 #review-prefetch {
