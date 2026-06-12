@@ -572,7 +572,7 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False, _inference_lo
         return False  # sentinel: person found but crop is ~full frame
 
     orig_buf = io.BytesIO()
-    img.save(orig_buf, format="JPEG", quality=85)
+    img.save(orig_buf, format="JPEG", quality=70)
 
     crop_buf = io.BytesIO()
     img.crop((int(x1), int(y1), int(x2), int(y2))).save(crop_buf, format="JPEG", quality=85)

@@ -472,7 +472,7 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS, _inference
         return False  # noop — matches compute_crop() sentinel so producer counts it correctly
 
     orig_buf = io.BytesIO()
-    image.save(orig_buf, format="JPEG", quality=85)
+    image.save(orig_buf, format="JPEG", quality=70)
 
     crop_buf = io.BytesIO()
     image.crop((int(x1), int(y1), int(x2), int(y2))).save(crop_buf, format="JPEG", quality=85)
