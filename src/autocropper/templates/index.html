@@ -45,6 +45,11 @@
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
 
+<!-- Filmstrip -->
+<div id="filmstrip-wrap" style="display:none">
+  <div id="filmstrip"></div>
+</div>
+
 <div id="panels">
   <div class="panel" id="panel-orig">
     <img id="img-orig" src="" alt="">
@@ -146,12 +151,14 @@
     document.getElementById('btn-pick').disabled = false;
     document.getElementById('picker-sub').textContent = 'Select a folder of CR3 files to review';
     document.getElementById('picker-error').textContent = '';
+    resetFilmstrip();
     uiReady = false;
     deciding = false;
   }
 
   function showStarting(stage, progress) {
     _nextPrecomputed = null;
+    resetFilmstrip();
     const overlay = document.getElementById('overlay');
     overlay.classList.remove('hidden');
     overlay.querySelector('.spinner').style.display = '';
@@ -230,8 +237,81 @@
     document.getElementById('overlay-sub').textContent = sub;
     overlay.querySelector('.spinner').style.display = '';
     updateBuffer(data.buffered || 0, data.prefetch);
+    if (data.total_files) buildFilmstrip(data.total_files);
     uiReady = false;
     deciding = false;
+  }
+
+  // ── Filmstrip ──────────────────────────────────────────────
+  let _filmstripBuilt = false;
+  let _thumbLoaded = new Set();
+  let _filmstripObserver = null;
+
+  function buildFilmstrip(total) {
+    if (_filmstripBuilt || total <= 0) return;
+    _filmstripBuilt = true;
+    const wrap = document.getElementById('filmstrip-wrap');
+    const strip = document.getElementById('filmstrip');
+    strip.innerHTML = '';
+    _thumbLoaded.clear();
+    if (_filmstripObserver) _filmstripObserver.disconnect();
+    _filmstripObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const el = entry.target;
+          const idx = parseInt(el.dataset.fileIdx, 10);
+          if (!_thumbLoaded.has(idx)) {
+            loadThumb(idx, el);
+            _filmstripObserver.unobserve(el);
+          }
+        }
+      });
+    }, { root: wrap, rootMargin: '0px 300px' });
+    for (let i = 0; i < total; i++) {
+      const item = document.createElement('div');
+      item.className = 'thumb-item';
+      item.dataset.fileIdx = i;
+      const ph = document.createElement('div');
+      ph.className = 'thumb-placeholder';
+      ph.textContent = i + 1;
+      item.appendChild(ph);
+      strip.appendChild(item);
+      _filmstripObserver.observe(item);
+    }
+    wrap.style.display = '';
+  }
+
+  function loadThumb(fileIdx, el) {
+    _thumbLoaded.add(fileIdx);
+    const img = new Image();
+    img.onload = () => {
+      const ph = el.querySelector('.thumb-placeholder');
+      if (ph) el.removeChild(ph);
+      el.appendChild(img);
+    };
+    img.src = `/api/thumbnail/${fileIdx}`;
+  }
+
+  function updateFilmstripCurrent(fileIdx) {
+    document.querySelectorAll('.thumb-item.current').forEach(el => el.classList.remove('current'));
+    const el = document.querySelector(`.thumb-item[data-file-idx="${fileIdx}"]`);
+    if (el) el.classList.add('current');
+  }
+
+  function centreFilmstripOn(fileIdx) {
+    const el = document.querySelector(`.thumb-item[data-file-idx="${fileIdx}"]`);
+    if (!el) return;
+    const wrap = document.getElementById('filmstrip-wrap');
+    const offset = el.offsetLeft - wrap.clientWidth / 2 + el.offsetWidth / 2;
+    wrap.scrollTo({ left: offset, behavior: 'smooth' });
+  }
+
+  function resetFilmstrip() {
+    _filmstripBuilt = false;
+    _thumbLoaded.clear();
+    if (_filmstripObserver) { _filmstripObserver.disconnect(); _filmstripObserver = null; }
+    document.getElementById('filmstrip').innerHTML = '';
+    document.getElementById('filmstrip-wrap').style.display = 'none';
   }
 
   let _currentCropCoords = null;
@@ -304,6 +384,11 @@
     document.getElementById('ml-badge').style.display = data.ml_crop ? '' : 'none';
     document.getElementById('crop-hint-text').textContent = data.ml_crop ? 'Apply ML crop' : 'Apply margin crop';
     syncMlUi(data);
+    if (data.total_files) buildFilmstrip(data.total_files);
+    if (data.file_idx !== undefined) {
+      updateFilmstripCurrent(data.file_idx);
+      centreFilmstripOn(data.file_idx);
+    }
     uiReady = true;
     deciding = false;
   }
@@ -522,13 +607,13 @@
     const dx = e.deltaX / norm;
 
     if (Math.abs(dy) >= Math.abs(dx)) {
-      // Vertical scroll → zoom (scroll up = tighter crop, scroll down = looser)
+      // Vertical scroll → zoom (scroll down = tighter crop, scroll up = looser)
       const {x1, y1, x2, y2} = _currentCropCoords;
       const cw = x2 - x1, ch = y2 - y1;
       const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
       const s = Math.max(
         100 / Math.min(cw, ch),
-        Math.min(Math.min(_origSize.w / cw, _origSize.h / ch), 1 - dy * 0.003)
+        Math.min(Math.min(_origSize.w / cw, _origSize.h / ch), 1 + dy * 0.003)
       );
       const ncw = cw * s, nch = ch * s;
       _currentCropCoords = _constrainCrop({x1: cx - ncw / 2, y1: cy - nch / 2, x2: cx + ncw / 2, y2: cy + nch / 2}, _cropAngle);

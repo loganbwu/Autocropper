@@ -422,3 +422,60 @@ body {
   color: var(--pale-blue);
   background: none;
 }
+
+/* ── Filmstrip ── */
+
+#filmstrip-wrap {
+  height: 98px;
+  background: #0c0c0c;
+  border-bottom: 1px solid #2a2a2a;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-shrink: 0;
+  scroll-behavior: smooth;
+}
+
+#filmstrip-wrap::-webkit-scrollbar { height: 4px; }
+#filmstrip-wrap::-webkit-scrollbar-track { background: #0c0c0c; }
+#filmstrip-wrap::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+
+#filmstrip {
+  display: flex;
+  height: 100%;
+  gap: 2px;
+  padding: 4px;
+  align-items: center;
+}
+
+.thumb-item {
+  flex: 0 0 auto;
+  height: 86px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid transparent;
+  border-radius: 2px;
+  background: #1a1a1a;
+  overflow: hidden;
+}
+
+.thumb-item.current {
+  border-color: var(--pale-blue);
+  box-shadow: 0 0 0 1px var(--pale-blue);
+}
+
+.thumb-item img {
+  height: 82px;
+  width: auto;
+  display: block;
+}
+
+.thumb-placeholder {
+  height: 82px;
+  min-width: 55px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #444;
+}

@@ -387,8 +387,8 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS):
     Returns None if the image cannot be processed or fewer than n matching neighbours exist.
     """
     from .main import (
-        apply_orientation, enforce_aspect_ratio, extract_preview_image,
-        get_orientation, limit_zoom,
+        apply_orientation, enforce_aspect_ratio, expand_for_instagram_safe_zone,
+        extract_preview_image, get_orientation, limit_zoom,
     )
 
     t_start = time.perf_counter()
@@ -459,6 +459,7 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS):
     x2 = cx_abs + half_w
     y2 = cy_abs + half_h
 
+    x1, y1, x2, y2 = expand_for_instagram_safe_zone(x1, y1, x2, y2, w_img, h_img)
     x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w_img, h_img)
     person_cx = float(mx1 + mx2) / 2
     x1, y1, x2, y2 = limit_zoom(x1, y1, x2, y2, w_img, h_img, person_cx)

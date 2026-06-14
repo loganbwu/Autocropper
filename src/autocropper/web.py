@@ -36,7 +36,7 @@ from .ml_crop import TrainingDataset, predict_ml_crop
 
 PREFETCH_DEFAULT = 10  # default prefetch buffer; user can override in the UI
 PREFETCH_MIN = 1
-PREFETCH_MAX = 200
+PREFETCH_MAX = 2000
 
 MARGIN_DEFAULT = 0.20
 MARGIN_MIN = 0.00
@@ -137,6 +137,8 @@ class ReviewState:
         self._lock = threading.Lock()
         self._producer_gen = 0  # incremented on mode switch; old producer exits, new one starts
         self._decided_paths: set = set()  # CR3 paths the user has explicitly accepted or rejected
+        self._file_index: dict = {f: i for i, f in enumerate(files)}
+        self._thumb_cache: dict = {}  # file_idx -> JPEG bytes
 
         threading.Thread(target=self._producer, args=(self.files, self._producer_gen), daemon=True).start()
         threading.Thread(target=self._consumer, daemon=True).start()
@@ -189,6 +191,7 @@ class ReviewState:
                     print(f"{_YELLOW}  No-op crop: {cr3.name}{_RESET}")
                     continue
 
+                result["file_idx"] = self._file_index.get(cr3, 0)
                 print(f"{_GREEN}  Ready:     {cr3.name}{_RESET}")
                 with self._prefetch_cv:
                     while self._prefetch_q.qsize() >= self.prefetch:
@@ -292,6 +295,7 @@ class ReviewState:
                     "idx": reviewed_count,
                     "producer_idx": self.producer_processed,
                     "total": self.total_eligible,
+                    "total_files": len(self.files),
                     "buffered": buffered,
                     "buffer_types": buffer_types,
                     "prefetch": self.prefetch,
@@ -304,6 +308,8 @@ class ReviewState:
                 "filename": d["cr3_path"].name,
                 "idx": reviewed_count + 1,
                 "total": self.total_eligible,
+                "total_files": len(self.files),
+                "file_idx": d.get("file_idx", 0),
                 "buffered": buffered,
                 "buffer_types": buffer_types,
                 "prefetch": self.prefetch,
@@ -315,6 +321,28 @@ class ReviewState:
                 "ml_models_ready": _ml_models_ready.is_set(),
             }
             return state
+
+    def get_thumbnail(self, file_idx: int):
+        """Return JPEG bytes for file_idx (0-based into self.files), resized to 90 px tall.
+        Caches results in memory for the lifetime of the session."""
+        if file_idx in self._thumb_cache:
+            return self._thumb_cache[file_idx]
+        try:
+            import io as _io
+            from PIL import Image as _Image
+            from .main import extract_preview_image
+            img = extract_preview_image(self.files[file_idx])
+            w, h = img.size
+            new_h = 90
+            new_w = max(1, int(round(w * new_h / h)))
+            img = img.resize((new_w, new_h), _Image.LANCZOS)
+            buf = _io.BytesIO()
+            img.save(buf, format="JPEG", quality=75)
+            data = buf.getvalue()
+            self._thumb_cache[file_idx] = data
+            return data
+        except Exception:
+            return None
 
 
 def create_app(initial_path: str = "", force: bool = False, all_people: bool = False,
@@ -616,6 +644,17 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
             content_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.route("/api/thumbnail/<int:file_idx>")
+    def api_thumbnail(file_idx):
+        state = app.config["review_state"]
+        if state is None or not (0 <= file_idx < len(state.files)):
+            return "", 404
+        data = state.get_thumbnail(file_idx)
+        if data is None:
+            return "", 404
+        return Response(data, content_type="image/jpeg",
+                        headers={"Cache-Control": "max-age=3600"})
 
     @app.route("/api/set-prefetch", methods=["POST"])
     def api_set_prefetch():
