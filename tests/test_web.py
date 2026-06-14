@@ -1,11 +1,12 @@
 """Tests for web.py — filmstrip thumbnail endpoint and related state.
 
-No real CR3 files or AI models are required; extract_preview_image is mocked.
+No real CR3 files or AI models are required; image extraction is mocked.
 """
 
 import io
 import queue
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,15 @@ import pytest
 from PIL import Image
 
 from autocropper.web import ReviewState, create_app
+
+
+@contextmanager
+def _mock_extraction(source_img, orientation=1):
+    """Patch the three image-reading calls used by get_thumbnail."""
+    with patch("autocropper.main.extract_preview_image", return_value=source_img), \
+         patch("autocropper.main.get_orientation", return_value=orientation), \
+         patch("autocropper.main.apply_orientation", side_effect=lambda img, ori: img):
+        yield
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -123,7 +133,7 @@ def test_get_thumbnail_resizes_to_90px_height(tmp_path):
     state = _minimal_state([cr3])
 
     source = _make_rgb_image(w=4000, h=3000)
-    with patch("autocropper.main.extract_preview_image", return_value=source):
+    with _mock_extraction(source):
         result = state.get_thumbnail(0)
 
     assert result is not None
@@ -138,7 +148,7 @@ def test_get_thumbnail_preserves_aspect_ratio(tmp_path):
     state = _minimal_state([cr3])
 
     source = _make_rgb_image(w=3000, h=2000)  # 3:2 landscape
-    with patch("autocropper.main.extract_preview_image", return_value=source):
+    with _mock_extraction(source):
         result = state.get_thumbnail(0)
 
     out = Image.open(io.BytesIO(result))
@@ -154,7 +164,9 @@ def test_get_thumbnail_is_cached(tmp_path):
     state = _minimal_state([cr3])
 
     source = _make_rgb_image()
-    with patch("autocropper.main.extract_preview_image", return_value=source) as mock_extract:
+    with patch("autocropper.main.extract_preview_image", return_value=source) as mock_extract, \
+         patch("autocropper.main.get_orientation", return_value=1), \
+         patch("autocropper.main.apply_orientation", side_effect=lambda img, ori: img):
         result1 = state.get_thumbnail(0)
         result2 = state.get_thumbnail(0)
 
@@ -178,7 +190,8 @@ def test_get_thumbnail_extract_failure_returns_none(tmp_path):
     cr3.touch()
     state = _minimal_state([cr3])
 
-    with patch("autocropper.main.extract_preview_image", side_effect=OSError("no preview")):
+    with patch("autocropper.main.extract_preview_image", side_effect=OSError("no preview")), \
+         patch("autocropper.main.get_orientation", return_value=1):
         result = state.get_thumbnail(0)
 
     assert result is None
@@ -190,7 +203,8 @@ def test_get_thumbnail_failed_not_cached(tmp_path):
     cr3.touch()
     state = _minimal_state([cr3])
 
-    with patch("autocropper.main.extract_preview_image", side_effect=OSError("no preview")):
+    with patch("autocropper.main.extract_preview_image", side_effect=OSError("no preview")), \
+         patch("autocropper.main.get_orientation", return_value=1):
         result1 = state.get_thumbnail(0)
 
     assert result1 is None
@@ -204,11 +218,27 @@ def test_get_thumbnail_returns_valid_jpeg(tmp_path):
     state = _minimal_state([cr3])
 
     source = _make_rgb_image(w=200, h=300)
-    with patch("autocropper.main.extract_preview_image", return_value=source):
+    with _mock_extraction(source):
         result = state.get_thumbnail(0)
 
     assert result is not None
     assert result[:2] == b"\xff\xd8"  # JPEG magic bytes
+
+
+def test_get_thumbnail_applies_orientation(tmp_path):
+    """apply_orientation must be called with the file's EXIF orientation value."""
+    cr3 = tmp_path / "photo.cr3"
+    cr3.touch()
+    state = _minimal_state([cr3])
+
+    source = _make_rgb_image(w=300, h=200)
+    with patch("autocropper.main.extract_preview_image", return_value=source), \
+         patch("autocropper.main.get_orientation", return_value=6) as mock_orient, \
+         patch("autocropper.main.apply_orientation", side_effect=lambda img, ori: img) as mock_apply:
+        state.get_thumbnail(0)
+
+    mock_orient.assert_called_once_with(cr3)
+    mock_apply.assert_called_once_with(source, 6)
 
 
 # ── get_state includes filmstrip fields ───────────────────────────────────────

@@ -330,8 +330,9 @@ class ReviewState:
         try:
             import io as _io
             from PIL import Image as _Image
-            from .main import extract_preview_image
-            img = extract_preview_image(self.files[file_idx])
+            from .main import apply_orientation, extract_preview_image, get_orientation
+            cr3 = self.files[file_idx]
+            img = apply_orientation(extract_preview_image(cr3), get_orientation(cr3))
             w, h = img.size
             new_h = 90
             new_w = max(1, int(round(w * new_h / h)))

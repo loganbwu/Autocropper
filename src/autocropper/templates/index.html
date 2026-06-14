@@ -45,11 +45,6 @@
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
 
-<!-- Filmstrip -->
-<div id="filmstrip-wrap" style="display:none">
-  <div id="filmstrip"></div>
-</div>
-
 <div id="panels">
   <div class="panel" id="panel-orig">
     <img id="img-orig" src="" alt="">
@@ -67,6 +62,11 @@
       <div id="overlay-progress-bar"></div>
     </div>
   </div>
+</div>
+
+<!-- Filmstrip -->
+<div id="filmstrip-wrap" style="display:none">
+  <div id="filmstrip"></div>
 </div>
 
 <script>
@@ -596,34 +596,50 @@
     document.getElementById('img-crop').style.cursor = '';
   });
 
-  // ── Scroll: zoom (vertical) and rotate (horizontal) ────────
+  // ── Pinch / scroll: zoom and pan ─────────────────────────
+  // Deltas are accumulated across all wheel events that arrive within one
+  // animation frame so that rapid bursts are applied as a single smooth step.
+
+  let _pendingGesture = null;  // { type: 'zoom', factor } | { type: 'pan', dx, dy }
 
   document.getElementById('img-crop').addEventListener('wheel', (e) => {
     if (!uiReady || !_currentCropCoords || !_origSize) return;
     e.preventDefault();
-    // Normalise: trackpad gives pixels (deltaMode=0), mouse wheel gives lines (deltaMode=1)
-    const norm = e.deltaMode === 0 ? 1 : 30;
-    const dy = e.deltaY / norm;
-    const dx = e.deltaX / norm;
 
-    if (Math.abs(dy) >= Math.abs(dx)) {
-      // Vertical scroll → zoom (scroll down = tighter crop, scroll up = looser)
-      const {x1, y1, x2, y2} = _currentCropCoords;
-      const cw = x2 - x1, ch = y2 - y1;
-      const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
-      const s = Math.max(
-        100 / Math.min(cw, ch),
-        Math.min(Math.min(_origSize.w / cw, _origSize.h / ch), 1 + dy * 0.003)
-      );
-      const ncw = cw * s, nch = ch * s;
-      _currentCropCoords = _constrainCrop({x1: cx - ncw / 2, y1: cy - nch / 2, x2: cx + ncw / 2, y2: cy + nch / 2}, _cropAngle);
+    if (e.ctrlKey) {
+      // Pinch gesture → zoom; compound-multiply so each event scales on the last
+      if (!_pendingGesture || _pendingGesture.type !== 'zoom') _pendingGesture = { type: 'zoom', factor: 1 };
+      _pendingGesture.factor *= (1 + e.deltaY * 0.003);
+    } else if (e.deltaMode === 1) {
+      // Mouse wheel (line mode) → zoom
+      if (!_pendingGesture || _pendingGesture.type !== 'zoom') _pendingGesture = { type: 'zoom', factor: 1 };
+      _pendingGesture.factor *= (1 + (e.deltaY / 30) * 0.003);
     } else {
-      // Rotation temporarily disabled
+      // Two-finger trackpad scroll → pan; accumulate in image-pixel space
+      const {x1, y1, x2, y2} = _currentCropCoords;
+      const scale = (x2 - x1) / document.getElementById('img-crop').clientWidth;
+      if (!_pendingGesture || _pendingGesture.type !== 'pan') _pendingGesture = { type: 'pan', dx: 0, dy: 0 };
+      _pendingGesture.dx += e.deltaX * scale;
+      _pendingGesture.dy += e.deltaY * scale;
     }
 
     if (!_rafId) {
       _rafId = requestAnimationFrame(() => {
         _rafId = null;
+        const g = _pendingGesture;
+        _pendingGesture = null;
+        if (!g || !_currentCropCoords) return;
+        const {x1, y1, x2, y2} = _currentCropCoords;
+        const cw = x2 - x1, ch = y2 - y1;
+        if (g.type === 'zoom') {
+          const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+          const s = Math.max(100 / Math.min(cw, ch),
+            Math.min(Math.min(_origSize.w / cw, _origSize.h / ch), g.factor));
+          const ncw = cw * s, nch = ch * s;
+          _currentCropCoords = _constrainCrop({x1: cx - ncw / 2, y1: cy - nch / 2, x2: cx + ncw / 2, y2: cy + nch / 2}, _cropAngle);
+        } else {
+          _currentCropCoords = _constrainCrop({x1: x1 + g.dx, y1: y1 + g.dy, x2: x2 + g.dx, y2: y2 + g.dy}, _cropAngle);
+        }
         _drawCrop(_currentCropCoords, _cropAngle);
       });
     }

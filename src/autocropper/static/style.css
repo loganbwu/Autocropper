@@ -428,7 +428,7 @@ body {
 #filmstrip-wrap {
   height: 98px;
   background: #0c0c0c;
-  border-bottom: 1px solid #2a2a2a;
+  border-top: 1px solid #2a2a2a;
   overflow-x: auto;
   overflow-y: hidden;
   flex-shrink: 0;
