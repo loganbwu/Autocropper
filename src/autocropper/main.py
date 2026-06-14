@@ -341,6 +341,18 @@ def has_been_reviewed(cr3_path: Path):
         return False
 
 
+def _inject_description_attrs(content: str, attrs_str: str) -> str:
+    """Insert attrs_str as new attributes in the first rdf:Description opening tag.
+
+    XMP attribute values never contain bare >, so [^>]* reliably finds the
+    closing > of the opening tag even across multiple lines.
+    """
+    m = re.search(r'(<rdf:Description\b[^>]*)(>)', content, re.DOTALL)
+    if not m:
+        return content
+    return content[:m.start(2)] + '\n   ' + attrs_str + content[m.start(2):]
+
+
 def write_decline_marker(cr3_path: Path):
     """Record that the crop was reviewed and declined (HasCrop=False).
 
@@ -348,7 +360,6 @@ def write_decline_marker(cr3_path: Path):
     Lightroom treats HasCrop=False as 'no crop', which is correct.
     """
     xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
-    decline_tag = '   <crs:HasCrop>False</crs:HasCrop>\n'
 
     if xmp_path.exists():
         content = xmp_path.read_text()
@@ -356,9 +367,10 @@ def write_decline_marker(cr3_path: Path):
             content = re.sub(rf'\s*<crs:{tag}>.*?</crs:{tag}>', '', content)
         for tag in CROP_TAGS:
             content = re.sub(rf'\s*crs:{tag}="[^"]*"', '', content)
-        last_close = content.rfind('</rdf:Description>')
-        if last_close != -1:
-            content = content[:last_close] + decline_tag + '  ' + content[last_close:]
+        if 'xmlns:crs=' not in content:
+            content = _inject_description_attrs(
+                content, 'xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"')
+        content = _inject_description_attrs(content, 'crs:HasCrop="False"')
         xmp_path.write_text(content)
     else:
         xmp_path.write_text(
@@ -366,8 +378,8 @@ def write_decline_marker(cr3_path: Path):
             '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
             ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
             '  <rdf:Description rdf:about=""\n'
-            '    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">\n'
-            + decline_tag +
+            '    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"\n'
+            '   crs:HasCrop="False">\n'
             '  </rdf:Description>\n'
             ' </rdf:RDF>\n'
             '</x:xmpmeta>\n'
@@ -473,19 +485,19 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, angle=0, keywords=None):
 
     left, top, right, bottom = _display_to_sensor_crop(nl, nt, nr, nb, orientation)
 
-    rotation_tags = (
-        '   <crs:CropConstrainToWarp>0</crs:CropConstrainToWarp>\n'
-        '   <crs:CropConstrainToUnitSquare>1</crs:CropConstrainToUnitSquare>\n'
+    rotation_attrs = (
+        '\n   crs:CropConstrainToWarp="0"'
+        '\n   crs:CropConstrainToUnitSquare="1"'
     ) if angle else ''
 
-    crop_block = (
-        f'   <crs:HasCrop>True</crs:HasCrop>\n'
-        f'   <crs:CropLeft>{left:.6f}</crs:CropLeft>\n'
-        f'   <crs:CropTop>{top:.6f}</crs:CropTop>\n'
-        f'   <crs:CropRight>{right:.6f}</crs:CropRight>\n'
-        f'   <crs:CropBottom>{bottom:.6f}</crs:CropBottom>\n'
-        f'   <crs:CropAngle>{-angle:.6f}</crs:CropAngle>\n'
-        + rotation_tags
+    crop_attrs = (
+        f'crs:HasCrop="True"'
+        f'\n   crs:CropLeft="{left:.6f}"'
+        f'\n   crs:CropTop="{top:.6f}"'
+        f'\n   crs:CropRight="{right:.6f}"'
+        f'\n   crs:CropBottom="{bottom:.6f}"'
+        f'\n   crs:CropAngle="{-angle:.6f}"'
+        + rotation_attrs
     )
 
     if xmp_path.exists():
@@ -494,14 +506,14 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, angle=0, keywords=None):
         # Strip element-form crop tags
         for tag in CROP_TAGS:
             content = re.sub(rf'\s*<crs:{tag}>.*?</crs:{tag}>', '', content)
-        # Strip attribute-form crop tags (written by Lightroom)
+        # Strip attribute-form crop tags
         for tag in CROP_TAGS:
             content = re.sub(rf'\s*crs:{tag}="[^"]*"', '', content)
 
-        # Insert crop block once, before the last </rdf:Description> (top-level block)
-        last_close = content.rfind('</rdf:Description>')
-        if last_close != -1:
-            content = content[:last_close] + crop_block + '  ' + content[last_close:]
+        if 'xmlns:crs=' not in content:
+            content = _inject_description_attrs(
+                content, 'xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"')
+        content = _inject_description_attrs(content, crop_attrs)
 
         if keywords:
             content = _merge_keywords(content, keywords)
@@ -510,22 +522,27 @@ def write_xmp(cr3_path: Path, x1, y1, x2, y2, w, h, angle=0, keywords=None):
 
     else:
         kw_block = _keywords_block(sorted(keywords)) if keywords else ''
-        xmp = f"""<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/">
- <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-  <rdf:Description rdf:about=""
-    xmlns:dc="http://purl.org/dc/elements/1.1/"
-    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">
-   <crs:HasCrop>True</crs:HasCrop>
-   <crs:CropLeft>{left:.6f}</crs:CropLeft>
-   <crs:CropTop>{top:.6f}</crs:CropTop>
-   <crs:CropRight>{right:.6f}</crs:CropRight>
-   <crs:CropBottom>{bottom:.6f}</crs:CropBottom>
-   <crs:CropAngle>{-angle:.6f}</crs:CropAngle>
-{rotation_tags}{kw_block}  </rdf:Description>
- </rdf:RDF>
-</x:xmpmeta>
-<?xpacket end="w"?>"""
+        xmp = (
+            '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
+            ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+            '  <rdf:Description rdf:about=""\n'
+            '    xmlns:dc="http://purl.org/dc/elements/1.1/"\n'
+            '    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"\n'
+            f'   crs:HasCrop="True"\n'
+            f'   crs:CropLeft="{left:.6f}"\n'
+            f'   crs:CropTop="{top:.6f}"\n'
+            f'   crs:CropRight="{right:.6f}"\n'
+            f'   crs:CropBottom="{bottom:.6f}"\n'
+            f'   crs:CropAngle="{-angle:.6f}"'
+            + (f'\n   crs:CropConstrainToWarp="0"\n   crs:CropConstrainToUnitSquare="1"' if angle else '')
+            + '>\n'
+            + kw_block
+            + '  </rdf:Description>\n'
+            ' </rdf:RDF>\n'
+            '</x:xmpmeta>\n'
+            '<?xpacket end="w"?>'
+        )
 
         xmp_path.write_text(xmp)
 
