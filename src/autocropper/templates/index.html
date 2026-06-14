@@ -243,30 +243,23 @@
   }
 
   // ── Filmstrip ──────────────────────────────────────────────
+  // Thumbnails are loaded on demand by an explicit scroll-based check rather
+  // than an IntersectionObserver.  IO fires whenever a thumbnail's width
+  // changes (placeholder → image), causing a cascade that loads every item
+  // sequentially.  A scroll event + debounce only fires on real user scrolls.
+
   let _filmstripBuilt = false;
+  let _filmstripReady = false;   // false until the first centreFilmstripOn instant-jump
   let _thumbLoaded = new Set();
-  let _filmstripObserver = null;
+  let _thumbScrollTimer = null;
 
   function buildFilmstrip(total) {
     if (_filmstripBuilt || total <= 0) return;
     _filmstripBuilt = true;
-    const wrap = document.getElementById('filmstrip-wrap');
+    _filmstripReady = false;
     const strip = document.getElementById('filmstrip');
     strip.innerHTML = '';
     _thumbLoaded.clear();
-    if (_filmstripObserver) _filmstripObserver.disconnect();
-    _filmstripObserver = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          const el = entry.target;
-          const idx = parseInt(el.dataset.fileIdx, 10);
-          if (!_thumbLoaded.has(idx)) {
-            loadThumb(idx, el);
-            _filmstripObserver.unobserve(el);
-          }
-        }
-      });
-    }, { root: wrap, rootMargin: '0px 300px' });
     for (let i = 0; i < total; i++) {
       const item = document.createElement('div');
       item.className = 'thumb-item';
@@ -276,9 +269,8 @@
       ph.textContent = i + 1;
       item.appendChild(ph);
       strip.appendChild(item);
-      _filmstripObserver.observe(item);
     }
-    wrap.style.display = '';
+    document.getElementById('filmstrip-wrap').style.display = '';
   }
 
   function loadThumb(fileIdx, el) {
@@ -292,6 +284,25 @@
     img.src = `/api/thumbnail/${fileIdx}`;
   }
 
+  function loadVisibleThumbnails() {
+    const wrap = document.getElementById('filmstrip-wrap');
+    const margin = 300;
+    const wrapRect = wrap.getBoundingClientRect();
+    const left  = wrapRect.left - margin;
+    const right = wrapRect.right + margin;
+    wrap.querySelectorAll('.thumb-item').forEach(el => {
+      const fileIdx = parseInt(el.dataset.fileIdx, 10);
+      if (_thumbLoaded.has(fileIdx)) return;
+      const r = el.getBoundingClientRect();
+      if (r.right >= left && r.left <= right) loadThumb(fileIdx, el);
+    });
+  }
+
+  document.getElementById('filmstrip-wrap').addEventListener('scroll', () => {
+    clearTimeout(_thumbScrollTimer);
+    _thumbScrollTimer = setTimeout(loadVisibleThumbnails, 80);
+  }, { passive: true });
+
   function updateFilmstripCurrent(fileIdx) {
     document.querySelectorAll('.thumb-item.current').forEach(el => el.classList.remove('current'));
     const el = document.querySelector(`.thumb-item[data-file-idx="${fileIdx}"]`);
@@ -303,13 +314,20 @@
     if (!el) return;
     const wrap = document.getElementById('filmstrip-wrap');
     const offset = el.offsetLeft - wrap.clientWidth / 2 + el.offsetWidth / 2;
-    wrap.scrollTo({ left: offset, behavior: 'smooth' });
+    if (_filmstripReady) {
+      wrap.scrollTo({ left: offset, behavior: 'smooth' });
+    } else {
+      wrap.scrollLeft = offset;   // instant — no animation sweep triggering loads
+      _filmstripReady = true;
+      loadVisibleThumbnails();
+    }
   }
 
   function resetFilmstrip() {
     _filmstripBuilt = false;
+    _filmstripReady = false;
     _thumbLoaded.clear();
-    if (_filmstripObserver) { _filmstripObserver.disconnect(); _filmstripObserver = null; }
+    clearTimeout(_thumbScrollTimer);
     document.getElementById('filmstrip').innerHTML = '';
     document.getElementById('filmstrip-wrap').style.display = 'none';
   }

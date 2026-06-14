@@ -432,7 +432,7 @@ body {
   overflow-x: auto;
   overflow-y: hidden;
   flex-shrink: 0;
-  scroll-behavior: smooth;
+  position: relative;
 }
 
 #filmstrip-wrap::-webkit-scrollbar { height: 4px; }
