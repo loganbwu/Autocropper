@@ -423,6 +423,79 @@ body {
   background: none;
 }
 
+/* ── Grid control ── */
+
+#grid-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Oswald', sans-serif;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--grey);
+}
+
+#grid-label { cursor: pointer; user-select: none; }
+
+#grid-toggle {
+  width: 32px;
+  height: 17px;
+  border-radius: 9px;
+  background: #444;
+  position: relative;
+  cursor: pointer;
+  border: none;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+#grid-toggle::after {
+  content: '';
+  position: absolute;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #bbb;
+  top: 2px;
+  left: 2px;
+  transition: left 0.2s, background 0.2s;
+}
+
+#grid-toggle.on { background: var(--pale-blue); }
+#grid-toggle.on::after { left: 17px; background: var(--white); }
+
+/* Rule-of-thirds overlay for the original image panel */
+#grid-overlay-orig {
+  position: absolute;
+  pointer-events: none;
+  display: none;
+  background:
+    linear-gradient(to right,
+      transparent calc(33.333% - 0.5px),
+      rgba(255,255,255,0.35) calc(33.333% - 0.5px),
+      rgba(255,255,255,0.35) calc(33.333% + 0.5px),
+      transparent calc(33.333% + 0.5px)
+    ),
+    linear-gradient(to right,
+      transparent calc(66.667% - 0.5px),
+      rgba(255,255,255,0.35) calc(66.667% - 0.5px),
+      rgba(255,255,255,0.35) calc(66.667% + 0.5px),
+      transparent calc(66.667% + 0.5px)
+    ),
+    linear-gradient(to bottom,
+      transparent calc(33.333% - 0.5px),
+      rgba(255,255,255,0.35) calc(33.333% - 0.5px),
+      rgba(255,255,255,0.35) calc(33.333% + 0.5px),
+      transparent calc(33.333% + 0.5px)
+    ),
+    linear-gradient(to bottom,
+      transparent calc(66.667% - 0.5px),
+      rgba(255,255,255,0.35) calc(66.667% - 0.5px),
+      rgba(255,255,255,0.35) calc(66.667% + 0.5px),
+      transparent calc(66.667% + 0.5px)
+    );
+}
+
 /* ── Filmstrip ── */
 
 #filmstrip-wrap {

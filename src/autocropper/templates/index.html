@@ -33,6 +33,10 @@
            value="{{ margin_default }}" title="Crop margin %" oninput="setMargin(this.value)">
     %
   </div>
+  <div id="grid-control">
+    <button id="grid-toggle" title="Toggle rule-of-thirds grid (G)" onclick="toggleGrid()"></button>
+    <label id="grid-label" for="grid-toggle" onclick="toggleGrid()">Grid</label>
+  </div>
   <div id="ml-control">
     <label id="ml-file-label" for="ml-file" title="Upload training dataset (.pkl)">dataset</label>
     <input id="ml-file" type="file" accept=".pkl" onchange="uploadDataset(this)">
@@ -48,6 +52,7 @@
 <div id="panels">
   <div class="panel" id="panel-orig">
     <img id="img-orig" src="" alt="">
+    <div id="grid-overlay-orig"></div>
     <div class="key-hint"><span class="key-badge">1</span> Keep original</div>
   </div>
   <div class="panel" id="panel-crop">
@@ -152,6 +157,7 @@
     document.getElementById('picker-sub').textContent = 'Select a folder of CR3 files to review';
     document.getElementById('picker-error').textContent = '';
     resetFilmstrip();
+    document.getElementById('grid-overlay-orig').style.display = 'none';
     uiReady = false;
     deciding = false;
   }
@@ -340,6 +346,7 @@
   let _cropImage = null;   // decoded Image for direct canvas draws
   let _cropCtx = null;     // canvas 2D context for img-crop
   let _rafId = null;       // pending requestAnimationFrame for drag/scroll
+  let _showGrid = false;
 
   function _drawCrop(coords, angle) {
     if (!_cropImage || !_cropCtx) return;
@@ -360,11 +367,48 @@
     if (angle) _cropCtx.rotate(angle * Math.PI / 180);
     _cropCtx.drawImage(_cropImage, -cx, -cy);
     _cropCtx.restore();
+
+    if (_showGrid) {
+      _cropCtx.save();
+      _cropCtx.strokeStyle = 'rgba(255,255,255,0.4)';
+      _cropCtx.lineWidth = 1;
+      for (let i = 1; i <= 2; i++) {
+        _cropCtx.beginPath();
+        _cropCtx.moveTo(cw * i / 3, 0);
+        _cropCtx.lineTo(cw * i / 3, ch);
+        _cropCtx.stroke();
+        _cropCtx.beginPath();
+        _cropCtx.moveTo(0, ch * i / 3);
+        _cropCtx.lineTo(cw, ch * i / 3);
+        _cropCtx.stroke();
+      }
+      _cropCtx.restore();
+    }
   }
 
   function _applyCrop(coords) {
     _currentCropCoords = coords;
     _drawCrop(coords, _cropAngle);
+  }
+
+  function toggleGrid() {
+    _showGrid = !_showGrid;
+    document.getElementById('grid-toggle').classList.toggle('on', _showGrid);
+    if (_currentCropCoords) _drawCrop(_currentCropCoords, _cropAngle);
+    _updateGridOrigOverlay();
+  }
+
+  function _updateGridOrigOverlay() {
+    const overlay = document.getElementById('grid-overlay-orig');
+    if (!_showGrid || !_currentFilename) { overlay.style.display = 'none'; return; }
+    const img = document.getElementById('img-orig');
+    const panelRect = document.getElementById('panel-orig').getBoundingClientRect();
+    const imgRect = img.getBoundingClientRect();
+    overlay.style.left   = (imgRect.left   - panelRect.left) + 'px';
+    overlay.style.top    = (imgRect.top    - panelRect.top)  + 'px';
+    overlay.style.width  = imgRect.width  + 'px';
+    overlay.style.height = imgRect.height + 'px';
+    overlay.style.display = '';
   }
 
   async function showImage(data) {
@@ -390,6 +434,7 @@
     _cropCtx = canvas.getContext('2d');
     document.getElementById('overlay').classList.add('hidden');
     document.getElementById('img-orig').src = origSrc;
+    requestAnimationFrame(_updateGridOrigOverlay);
     _currentCropCoords = data.crop_coords;
     _drawCrop(data.crop_coords, 0);
     document.getElementById('filename').textContent = data.filename;
@@ -561,7 +606,10 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === '1') decide('skip');
     if (e.key === '2') decide('crop');
+    if (e.key === 'g' || e.key === 'G') toggleGrid();
   });
+
+  window.addEventListener('resize', _updateGridOrigOverlay);
 
   // ── Crop constraint ────────────────────────────────────────
   // Returns coords adjusted so the rotated crop fits within the image.
