@@ -197,15 +197,17 @@ def _mask_bbox(mask):
 def extract_features(image, models, name=None, verbose=True):
     """Extract features from an image for ML crop matching.
 
-    Returns a 4-tuple (mask_cropped, face_centroid, aspect_ratio, mask_bbox) or None.
+    Returns a 5-tuple (mask_cropped, face_centroid, face_yaw, aspect_ratio, mask_bbox) or None.
 
     mask_cropped:  bool np.ndarray cropped to the mask bounding box in display pixels
     face_centroid: (x, y) normalised within mask bbox [0, 1], or None if no face found
+    face_yaw:      float in [-1, +1] (−1 = image-left, +1 = image-right, 0 = frontal),
+                   or None if nose or either eye keypoint is below the confidence threshold
     aspect_ratio:  image display width / height
     mask_bbox:     (mx1, my1, mx2, my2) in full-image display pixels
 
     Returns None if the image cannot be processed (no person detected, SAM failure,
-    or empty mask). Returns face_centroid=None when face keypoints are absent.
+    or empty mask). Returns face_centroid=None and face_yaw=None when face keypoints are absent.
 
     name:    optional filename used in warning messages.
     verbose: if False, suppresses per-image timing output (set False when building dataset).
@@ -470,10 +472,11 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS):
         dists = dataset.alpha * (1.0 - ious) + (1.0 - dataset.alpha) * face_component
 
     top_idx = np.argpartition(dists, n)[:n]
+    top_idx = top_idx[np.argsort(dists[top_idx])]   # sort by distance ascending
     neighbors = [candidates[i] for i in top_idx]
     t_knn = time.perf_counter()
 
-    print(f"{_DIM}  ML timing [{cr3_path.name}]: io={t_io-t_start:.2f}s  lock_wait={t_lock_wait:.2f}s  models={t_models:.2f}s  knn(n={len(candidates)})={t_knn-t_inf:.2f}s  total={t_knn-t_start:.2f}s{_RESET}")
+    print(f"{_DIM}  ML timing [{cr3_path.name}]: io={t_io-t_start:.2f}s  lock_wait={t_lock_wait:.2f}s  models={t_models:.2f}s  knn(n={len(candidates)})={t_knn-t_inf:.2f}s  top_dist={dists[top_idx[0]]:.3f}  total={t_knn-t_start:.2f}s{_RESET}")
 
     pred_cc_x = float(np.mean([r.crop_center[0] for r in neighbors]))
     pred_cc_y = float(np.mean([r.crop_center[1] for r in neighbors]))
