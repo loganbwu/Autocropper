@@ -287,7 +287,7 @@ def _neighbour_grid(neighbours_with_dists, n_cols=THUMB_COLS, size=THUMB_SIZE):
 def _find_neighbours(query_mask, query_fc, query_ar, dataset, n):
     """Return list of (record, distance) for the n nearest neighbours."""
     from .ml_crop import KNN_COMPARE_SIZE
-    candidates, masks_small, face_centroids_arr = _get_ar_candidates(dataset, query_ar)
+    candidates, masks_small, face_centroids_arr, _face_yaws_arr = _get_ar_candidates(dataset, query_ar)
     if len(candidates) < n:
         return [(r, 0.0) for r in candidates]
 

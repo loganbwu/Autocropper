@@ -27,6 +27,7 @@ build-training-dataset = "autocropper.build_training_dataset:main"
 optimize-weights = "autocropper.optimize_weights:main"
 diagnostic-masks = "autocropper.diagnostic_masks:main"
 diagnostic-knn = "autocropper.diagnostic_knn:main"
+diagnostic-yaw = "autocropper.diagnostic_yaw:main"
 
 [build-system]
 requires = ["hatchling"]
