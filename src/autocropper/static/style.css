@@ -483,26 +483,26 @@ body {
   background:
     linear-gradient(to right,
       transparent calc(33.333% - 0.5px),
-      rgba(255,255,255,0.35) calc(33.333% - 0.5px),
-      rgba(255,255,255,0.35) calc(33.333% + 0.5px),
+      rgba(0,0,0,0.35) calc(33.333% - 0.5px),
+      rgba(0,0,0,0.35) calc(33.333% + 0.5px),
       transparent calc(33.333% + 0.5px)
     ),
     linear-gradient(to right,
       transparent calc(66.667% - 0.5px),
-      rgba(255,255,255,0.35) calc(66.667% - 0.5px),
-      rgba(255,255,255,0.35) calc(66.667% + 0.5px),
+      rgba(0,0,0,0.35) calc(66.667% - 0.5px),
+      rgba(0,0,0,0.35) calc(66.667% + 0.5px),
       transparent calc(66.667% + 0.5px)
     ),
     linear-gradient(to bottom,
       transparent calc(33.333% - 0.5px),
-      rgba(255,255,255,0.35) calc(33.333% - 0.5px),
-      rgba(255,255,255,0.35) calc(33.333% + 0.5px),
+      rgba(0,0,0,0.35) calc(33.333% - 0.5px),
+      rgba(0,0,0,0.35) calc(33.333% + 0.5px),
       transparent calc(33.333% + 0.5px)
     ),
     linear-gradient(to bottom,
       transparent calc(66.667% - 0.5px),
-      rgba(255,255,255,0.35) calc(66.667% - 0.5px),
-      rgba(255,255,255,0.35) calc(66.667% + 0.5px),
+      rgba(0,0,0,0.35) calc(66.667% - 0.5px),
+      rgba(0,0,0,0.35) calc(66.667% + 0.5px),
       transparent calc(66.667% + 0.5px)
     );
 }
