@@ -244,6 +244,17 @@ body {
   letter-spacing: 0.04em;
 }
 
+#noop-badge {
+  display: none;
+  font-family: 'Oswald', sans-serif;
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  background: #b8860b;
+  color: var(--black);
+  letter-spacing: 0.04em;
+}
+
 
 #progress-bar-wrap {
   flex: 0 0 auto;

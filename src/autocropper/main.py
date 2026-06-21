@@ -590,12 +590,10 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False,
 
     x1, y1, x2, y2 = _run_geometry(raw_x1, raw_y1, raw_x2, raw_y2, w, h, person_cx, margin_ratio)
 
-    # Skip if the crop is effectively the full frame (no meaningful difference)
-    if (x2 - x1) * (y2 - y1) / (w * h) > 0.96:
-        return False  # sentinel: person found but crop is ~full frame
-
     orig_buf = io.BytesIO()
     img.save(orig_buf, format="JPEG", quality=70)
+
+    noop = (x2 - x1) * (y2 - y1) / (w * h) > 0.96
 
     return {
         "cr3_path": cr3_path,
@@ -604,6 +602,7 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False,
         "raw_x1": raw_x1, "raw_y1": raw_y1, "raw_x2": raw_x2, "raw_y2": raw_y2,
         "person_cx": person_cx,
         "orig_bytes": orig_buf.getvalue(),
+        "noop": noop,
     }
 
 

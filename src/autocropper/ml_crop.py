@@ -501,8 +501,7 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS):
     x1, y1, x2, y2 = limit_zoom(x1, y1, x2, y2, w_img, h_img, person_cx)
     x1, y1, x2, y2 = enforce_aspect_ratio(x1, y1, x2, y2, w_img, h_img)
 
-    if (x2 - x1) * (y2 - y1) / (w_img * h_img) > 0.96:
-        return False  # noop — matches compute_crop() sentinel so producer counts it correctly
+    noop = (x2 - x1) * (y2 - y1) / (w_img * h_img) > 0.96
 
     orig_buf = io.BytesIO()
     image.save(orig_buf, format="JPEG", quality=70)
@@ -516,4 +515,5 @@ def predict_ml_crop(cr3_path, dataset, models, n=DEFAULT_N_NEIGHBORS):
         "person_cx": person_cx,
         "orig_bytes": orig_buf.getvalue(),
         "ml_crop": True,
+        "noop": noop,
     }

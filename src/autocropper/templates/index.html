@@ -45,6 +45,7 @@
     <label id="ml-label" for="ml-toggle" onclick="toggleMlMode()">ML</label>
   </div>
   <span id="ml-badge">ML</span>
+  <span id="noop-badge">no-op</span>
   <div id="progress"></div>
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
@@ -445,6 +446,7 @@
     document.getElementById('panel-crop').classList.remove('selected');
     updateBuffer(data.buffered || 0, data.prefetch);
     document.getElementById('ml-badge').style.display = data.ml_crop ? '' : 'none';
+    document.getElementById('noop-badge').style.display = data.noop ? '' : 'none';
     document.getElementById('crop-hint-text').textContent = data.ml_crop ? 'Apply ML crop' : 'Apply margin crop';
     syncMlUi(data);
     if (data.total_files) buildFilmstrip(data.total_files);
