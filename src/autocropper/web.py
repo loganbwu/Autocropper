@@ -105,7 +105,7 @@ class ReviewState:
     consumer presents them and waits for decisions. The user rarely waits."""
 
     def __init__(self, files, models, all_people=False, prefetch=PREFETCH_DEFAULT, pre_skipped=0,
-                 ml_mode=False, ml_dataset=None, skip_noop=False):
+                 ml_mode=False, ml_dataset=None, skip_noop=False, skip_no_person=False):
         self.files = files
         self.models = models
         self.all_people = all_people
@@ -117,6 +117,7 @@ class ReviewState:
         self.no_person_skipped = 0           # person not detected (or inference error)
         self.noop_skipped = 0                # person found but crop is ~full frame
         self.skip_noop = skip_noop           # if True, auto-decline no-op crops
+        self.skip_no_person = skip_no_person # if True, auto-decline when no person detected
         self.skipped = pre_skipped           # combined: pre + no_person + noop
         self.producer_processed = 0
         self.margin = MARGIN_DEFAULT
@@ -172,30 +173,33 @@ class ReviewState:
                     _notify_sse()
                     continue
 
-                is_noop = result is not None and result is not False and result.get("noop")
+                is_noop = result is not None and result.get("noop")
+                is_no_person = result is not None and result.get("no_person")
                 with self._lock:
                     self.producer_processed += 1
-                    if result is None:
-                        self.skipped += 1
-                        self.no_person_skipped += 1
-                    elif is_noop and self.skip_noop:
+                    if is_noop and self.skip_noop:
                         self.skipped += 1
                         self.noop_skipped += 1
+                    elif is_no_person and self.skip_no_person:
+                        self.skipped += 1
+                        self.no_person_skipped += 1
 
-                if result is None:
-                    write_decline_marker(cr3)
-                    _notify_sse()
-                    print(f"{_YELLOW}  No person: {cr3.name}{_RESET}")
-                    continue
                 if is_noop and self.skip_noop:
                     write_decline_marker(cr3)
                     _notify_sse()
                     print(f"{_YELLOW}  No-op crop (auto-skipped): {cr3.name}{_RESET}")
                     continue
+                if is_no_person and self.skip_no_person:
+                    write_decline_marker(cr3)
+                    _notify_sse()
+                    print(f"{_YELLOW}  No person (auto-skipped): {cr3.name}{_RESET}")
+                    continue
 
                 result["file_idx"] = self._file_index.get(cr3, 0)
                 if is_noop:
                     print(f"{_YELLOW}  No-op crop: {cr3.name}{_RESET}")
+                elif is_no_person:
+                    print(f"{_YELLOW}  No person: {cr3.name}{_RESET}")
                 else:
                     print(f"{_GREEN}  Ready:     {cr3.name}{_RESET}")
                 with self._prefetch_cv:
@@ -322,6 +326,7 @@ class ReviewState:
                 "crop_coords": {"x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"]},
                 "ml_crop": bool(d.get("ml_crop")),
                 "noop": bool(d.get("noop")),
+                "no_person": bool(d.get("no_person")),
                 "ml_mode": self.ml_mode,
                 "ml_dataset_loaded": self.ml_dataset is not None,
                 "ml_models_ready": _ml_models_ready.is_set(),
@@ -353,7 +358,8 @@ class ReviewState:
 
 
 def create_app(initial_path: str = "", force: bool = False, all_people: bool = False,
-               ml_dataset_path: str = "", skip_noop: bool = False) -> Flask:
+               ml_dataset_path: str = "", skip_noop: bool = False,
+               skip_no_person: bool = False) -> Flask:
     app = Flask(__name__)
     app.config["review_state"] = None
     app.config["start_stage"] = None     # str while starting, None otherwise
@@ -363,6 +369,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
     app.config["force"] = force
     app.config["all_people"] = all_people
     app.config["skip_noop"] = skip_noop
+    app.config["skip_no_person"] = skip_no_person
     app.config["ml_dataset"] = None      # TrainingDataset | None, persists across sessions
     app.config["ml_dataset_name"] = ""   # filename stem shown in the UI
     app.config["ml_dataset_records"] = 0
@@ -468,6 +475,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                     ml_mode=use_ml,
                     ml_dataset=dataset if use_ml else None,
                     skip_noop=app.config["skip_noop"],
+                    skip_no_person=app.config["skip_no_person"],
                 )
             except Exception as e:
                 app.config["start_error"] = str(e)
@@ -706,6 +714,11 @@ def web_main():
         help="Automatically decline crops that are effectively the full frame (no-op crops)",
     )
     parser.add_argument(
+        "--skip-no-person",
+        action="store_true",
+        help="Automatically decline photos where no person was detected",
+    )
+    parser.add_argument(
         "--port",
         type=int,
         default=5001,
@@ -743,7 +756,8 @@ def web_main():
     threading.Thread(target=_load_models_thread, daemon=True).start()
 
     app = create_app(initial_path=initial_path, force=args.force, all_people=args.all_people,
-                     ml_dataset_path=ml_dataset_path, skip_noop=args.skip_noop)
+                     ml_dataset_path=ml_dataset_path, skip_noop=args.skip_noop,
+                     skip_no_person=args.skip_no_person)
 
     url = f"http://localhost:{args.port}"
     print(f"{_GREEN}Starting review UI at {url}{_RESET} (use --port to change)")

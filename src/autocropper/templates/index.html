@@ -46,6 +46,7 @@
   </div>
   <span id="ml-badge">ML</span>
   <span id="noop-badge">no-op</span>
+  <span id="no-person-badge">no person</span>
   <div id="progress"></div>
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
@@ -447,6 +448,7 @@
     updateBuffer(data.buffered || 0, data.prefetch);
     document.getElementById('ml-badge').style.display = data.ml_crop ? '' : 'none';
     document.getElementById('noop-badge').style.display = data.noop ? '' : 'none';
+    document.getElementById('no-person-badge').style.display = data.no_person ? '' : 'none';
     document.getElementById('crop-hint-text').textContent = data.ml_crop ? 'Apply ML crop' : 'Apply margin crop';
     syncMlUi(data);
     if (data.total_files) buildFilmstrip(data.total_files);

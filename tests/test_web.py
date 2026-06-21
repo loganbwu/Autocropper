@@ -48,6 +48,7 @@ def _minimal_state(files):
     state.no_person_skipped = 0
     state.noop_skipped = 0
     state.skip_noop = False
+    state.skip_no_person = False
     state.producer_processed = 0
     state.margin = 0.20
     state.prefetch = 10

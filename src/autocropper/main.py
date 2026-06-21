@@ -557,7 +557,17 @@ def compute_crop(models, cr3_path: Path, all_people: bool = False,
     boxes, hulls, w, h = detect_people_with_masks(models, img)
 
     if not boxes and not hulls:
-        return None
+        orig_buf = io.BytesIO()
+        img.save(orig_buf, format="JPEG", quality=70)
+        return {
+            "cr3_path": cr3_path,
+            "x1": 0, "y1": 0, "x2": w, "y2": h,
+            "w": w, "h": h,
+            "raw_x1": 0, "raw_y1": 0, "raw_x2": w, "raw_y2": h,
+            "person_cx": w / 2,
+            "orig_bytes": orig_buf.getvalue(),
+            "no_person": True,
+        }
 
     if not all_people:
         boxes, hulls = select_main_person(boxes, hulls)

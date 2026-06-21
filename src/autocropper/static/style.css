@@ -255,6 +255,17 @@ body {
   letter-spacing: 0.04em;
 }
 
+#no-person-badge {
+  display: none;
+  font-family: 'Oswald', sans-serif;
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  background: #8b4513;
+  color: var(--white);
+  letter-spacing: 0.04em;
+}
+
 
 #progress-bar-wrap {
   flex: 0 0 auto;
