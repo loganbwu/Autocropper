@@ -445,6 +445,11 @@ body {
   background: none;
 }
 
+.btn-fs {
+  padding: 3px 10px;
+  font-size: 11px;
+}
+
 /* ── Grid control ── */
 
 #grid-control {

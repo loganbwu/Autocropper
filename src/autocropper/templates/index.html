@@ -47,6 +47,7 @@
   <span id="ml-badge">ML</span>
   <span id="noop-badge">no-op</span>
   <span id="no-person-badge">no person</span>
+  <button class="btn-secondary btn-fs" id="btn-fullscreen" onclick="toggleFullscreen()">Fullscreen</button>
   <div id="progress"></div>
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
@@ -608,6 +609,7 @@
   }
 
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'f' || e.key === 'F') { toggleFullscreen(); e.preventDefault(); return; }
     if (e.key === '1') decide('skip');
     if (e.key === '2') decide('crop');
     if (e.key === 'g' || e.key === 'G') toggleGrid();
@@ -714,6 +716,21 @@
       });
     }
   }, { passive: false });
+
+  // ── Fullscreen ─────────────────────────────────────────────
+
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen();
+    }
+  }
+
+  document.addEventListener('fullscreenchange', () => {
+    const btn = document.getElementById('btn-fullscreen');
+    if (btn) btn.textContent = document.fullscreenElement ? 'Exit Fullscreen' : 'Fullscreen';
+  });
 
   // ── Entry point ────────────────────────────────────────────
 
