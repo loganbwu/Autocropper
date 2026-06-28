@@ -37,6 +37,10 @@
     <button id="grid-toggle" title="Toggle rule-of-thirds grid (G)" onclick="toggleGrid()"></button>
     <label id="grid-label" for="grid-toggle" onclick="toggleGrid()">Grid</label>
   </div>
+  <div id="ig-control">
+    <button id="ig-toggle" title="Toggle 4:5 Instagram portrait crop (I)" onclick="toggleIg()"></button>
+    <label id="ig-label" for="ig-toggle" onclick="toggleIg()">4:5</label>
+  </div>
   <div id="ml-control">
     <label id="ml-file-label" for="ml-file" title="Upload training dataset (.pkl)">dataset</label>
     <input id="ml-file" type="file" accept=".pkl" onchange="uploadDataset(this)">
@@ -350,6 +354,7 @@
   let _cropCtx = null;     // canvas 2D context for img-crop
   let _rafId = null;       // pending requestAnimationFrame for drag/scroll
   let _showGrid = false;
+  let _showIg = false;
 
   function _drawCrop(coords, angle) {
     if (!_cropImage || !_cropCtx) return;
@@ -387,6 +392,27 @@
       }
       _cropCtx.restore();
     }
+
+    if (_showIg) {
+      // 4:5 Instagram portrait crop centred on the canvas
+      const igRatio = 4 / 5;
+      let igW, igH;
+      if (cw / ch > igRatio) {
+        igH = ch; igW = ch * igRatio;
+      } else {
+        igW = cw; igH = Math.min(cw / igRatio, ch);
+      }
+      const igX = (cw - igW) / 2;
+      const igY = (ch - igH) / 2;
+      _cropCtx.save();
+      _cropCtx.fillStyle = 'rgba(0,0,0,0.45)';
+      if (igX > 0) { _cropCtx.fillRect(0, 0, igX, ch); _cropCtx.fillRect(igX + igW, 0, igX, ch); }
+      if (igY > 0) { _cropCtx.fillRect(igX, 0, igW, igY); _cropCtx.fillRect(igX, igY + igH, igW, igY); }
+      _cropCtx.strokeStyle = 'rgba(255,255,255,0.75)';
+      _cropCtx.lineWidth = 1;
+      _cropCtx.strokeRect(igX + 0.5, igY + 0.5, igW - 1, igH - 1);
+      _cropCtx.restore();
+    }
   }
 
   function _applyCrop(coords) {
@@ -399,6 +425,12 @@
     document.getElementById('grid-toggle').classList.toggle('on', _showGrid);
     if (_currentCropCoords) _drawCrop(_currentCropCoords, _cropAngle);
     _updateGridOrigOverlay();
+  }
+
+  function toggleIg() {
+    _showIg = !_showIg;
+    document.getElementById('ig-toggle').classList.toggle('on', _showIg);
+    if (_currentCropCoords) _drawCrop(_currentCropCoords, _cropAngle);
   }
 
   function _updateGridOrigOverlay() {
@@ -613,6 +645,7 @@
     if (e.key === '1') decide('skip');
     if (e.key === '2') decide('crop');
     if (e.key === 'g' || e.key === 'G') toggleGrid();
+    if (e.key === 'i' || e.key === 'I') toggleIg();
   });
 
   window.addEventListener('resize', _updateGridOrigOverlay);
