@@ -47,6 +47,8 @@
   <span id="ml-badge">ML</span>
   <span id="noop-badge">no-op</span>
   <span id="no-person-badge">no person</span>
+  <div class="key-hint"><span class="key-badge">1</span> Keep original</div>
+  <div class="key-hint"><span class="key-badge">2</span> <span id="crop-hint-text">Apply crop</span></div>
   <button class="btn-secondary btn-fs" id="btn-fullscreen" onclick="toggleFullscreen()">Fullscreen</button>
   <div id="progress"></div>
 </div>
@@ -56,11 +58,9 @@
   <div class="panel" id="panel-orig">
     <img id="img-orig" src="" alt="">
     <div id="grid-overlay-orig"></div>
-    <div class="key-hint"><span class="key-badge">1</span> Keep original</div>
   </div>
   <div class="panel" id="panel-crop">
     <canvas id="img-crop"></canvas>
-    <div class="key-hint"><span class="key-badge">2</span> <span id="crop-hint-text">Apply crop</span></div>
   </div>
   <div id="overlay">
     <div class="spinner"></div>
