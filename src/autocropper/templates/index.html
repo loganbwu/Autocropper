@@ -279,6 +279,7 @@
       const item = document.createElement('div');
       item.className = 'thumb-item';
       item.dataset.fileIdx = i;
+      item.onclick = () => navigate(i);
       const ph = document.createElement('div');
       ph.className = 'thumb-placeholder';
       ph.textContent = i + 1;
@@ -350,6 +351,8 @@
   let _currentCropCoords = null;
   let _origSize = null;
   let _currentFilename = null;
+  let _fileIdx = null;
+  let _totalFiles = 0;
   let _cropAngle = 0;      // rotation angle in degrees
   let _dragState = null;
   let _cropImage = null;   // decoded Image for direct canvas draws
@@ -450,6 +453,8 @@
 
   async function showImage(data) {
     _currentFilename = data.filename;
+    _fileIdx = data.file_idx ?? null;
+    _totalFiles = data.total_files || 0;
     const origSrc = 'data:image/jpeg;base64,' + data.orig_b64;
 
     await new Promise((resolve) => {
@@ -642,8 +647,22 @@
     // No polling needed — SSE will push the next state when the consumer is ready.
   }
 
+  function navigate(fileIdx) {
+    if (_fileIdx === null || fileIdx < 0 || fileIdx >= _totalFiles) return;
+    fetch('/api/navigate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({file_idx: fileIdx}),
+    });
+  }
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'f' || e.key === 'F') { toggleFullscreen(); e.preventDefault(); return; }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+      navigate(e.key === 'ArrowLeft' ? _fileIdx - 1 : _fileIdx + 1);
+      e.preventDefault(); return;
+    }
     if (e.key === '1') decide('skip');
     if (e.key === '2') decide('crop');
     if (e.key === 'g' || e.key === 'G') toggleGrid();

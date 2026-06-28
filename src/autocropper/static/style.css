@@ -590,7 +590,10 @@ body {
   border-radius: 2px;
   background: #1a1a1a;
   overflow: hidden;
+  cursor: pointer;
 }
+
+.thumb-item:hover { border-color: #666; }
 
 .thumb-item.current {
   border-color: var(--pale-blue);

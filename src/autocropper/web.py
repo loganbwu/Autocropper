@@ -270,6 +270,33 @@ class ReviewState:
                 self.status = "loading"
             _notify_sse()
 
+    def navigate(self, file_idx):
+        """Restart the producer from file_idx (0-based into self.files)."""
+        if not (0 <= file_idx < len(self.files)):
+            return False
+        with self._lock:
+            self._producer_gen += 1
+            new_gen = self._producer_gen
+            current_item = self.current
+            self.current = None
+            self.status = "loading"
+        if current_item is not None:
+            self._decision_q.put(("_discard", None, 0))
+        while True:
+            try:
+                self._prefetch_q.get_nowait()
+            except queue.Empty:
+                break
+        with self._prefetch_cv:
+            self._prefetch_cv.notify_all()
+        threading.Thread(
+            target=self._producer,
+            args=(self.files[file_idx:], new_gen),
+            daemon=True,
+        ).start()
+        _notify_sse()
+        return True
+
     def decide(self, choice, coords=None, angle=0):
         """Called from Flask request handler. choice: 'crop' | 'skip'.
         coords: optional {x1,y1,x2,y2} overriding server-side crop position.
@@ -526,6 +553,18 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
         coords = request.json.get("coords")  # {x1,y1,x2,y2} or absent
         angle  = request.json.get("angle", 0)
         state.decide(choice, coords, angle)
+        return jsonify({"ok": True})
+
+    @app.route("/api/navigate", methods=["POST"])
+    def api_navigate():
+        state = app.config["review_state"]
+        if state is None:
+            return jsonify({"error": "no active session"}), 400
+        file_idx = request.json.get("file_idx")
+        if not isinstance(file_idx, int):
+            return jsonify({"error": "invalid file_idx"}), 400
+        if not state.navigate(file_idx):
+            return jsonify({"error": "file_idx out of range"}), 400
         return jsonify({"ok": True})
 
     @app.route("/api/set-margin", methods=["POST"])
