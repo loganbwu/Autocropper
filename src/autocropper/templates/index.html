@@ -164,6 +164,7 @@
     document.getElementById('picker-sub').textContent = 'Select a folder of CR3 files to review';
     document.getElementById('picker-error').textContent = '';
     resetFilmstrip();
+    _currentFilename = null;
     document.getElementById('grid-overlay-orig').style.display = 'none';
     uiReady = false;
     deciding = false;
@@ -171,6 +172,7 @@
 
   function showStarting(stage, progress) {
     _nextPrecomputed = null;
+    _currentFilename = null;
     resetFilmstrip();
     const overlay = document.getElementById('overlay');
     overlay.classList.remove('hidden');
