@@ -22,7 +22,7 @@ rye sync
 ### Web review UI
 
 ```bash
-rye run autocrop-web
+rye run autocropper
 ```
 
 Opens a browser-based review interface. Select a folder of CR3 files, then step through each photo using keyboard shortcuts:
