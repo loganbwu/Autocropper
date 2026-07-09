@@ -19,38 +19,67 @@ from tqdm import tqdm
 from .ml_crop import (
     AR_EPSILON,
     DEFAULT_N_NEIGHBORS,
+    MASK_SIZE,
+    KNN_COMPARE_SIZE,
     TrainingDataset,
     _face_dist,
-    _mask_iou,
     _normalize_mask,
     _yaw_dist,
 )
 
+_STEP = MASK_SIZE // KNN_COMPARE_SIZE
 
-def _cross_val_error(records, alpha, yaw_weight, n):
-    """Mean crop-centre prediction error (Euclidean, normalised coords) over all leave-one-out folds."""
+
+def _cross_val_error(records, alpha, yaw_weight, n, pbar=None):
+    """Mean crop-centre prediction error (Euclidean, normalised coords) over all leave-one-out folds.
+
+    pbar: optional tqdm instance to update once per fold.
+    """
     errors = []
-    norms = [_normalize_mask(r.mask) for r in records]
+    # Pre-compute downsampled masks (matches predict_ml_crop vectorised path)
+    masks_small = np.array([r.mask[::_STEP, ::_STEP] for r in records], dtype=bool)
+
+    face_centroids = np.array(
+        [r.face_centroid if r.face_centroid is not None else (np.nan, np.nan)
+         for r in records], dtype=np.float32
+    )
+    face_yaws = np.array(
+        [r.face_yaw if r.face_yaw is not None else np.nan for r in records],
+        dtype=np.float32,
+    )
+    aspect_ratios = np.array([r.aspect_ratio for r in records], dtype=np.float32)
 
     for i, query in enumerate(records):
-        candidates = [
-            (j, r) for j, r in enumerate(records)
-            if j != i and abs(r.aspect_ratio - query.aspect_ratio) <= AR_EPSILON
-        ]
-        if len(candidates) < n:
+        if pbar is not None:
+            pbar.update(1)
+
+        mask_match = np.abs(aspect_ratios - query.aspect_ratio) <= AR_EPSILON
+        mask_match[i] = False
+        cand_idx = np.where(mask_match)[0]
+        if len(cand_idx) < n:
             continue
 
-        distances = []
-        for j, r in candidates:
-            iou = _mask_iou(norms[i], norms[j])
-            fd = _face_dist(query.face_centroid, r.face_centroid)
-            yd = _yaw_dist(query.face_yaw, r.face_yaw, fallback=fd)
-            face_comp = (1.0 - yaw_weight) * fd + yaw_weight * yd
-            dist = alpha * (1.0 - iou) + (1.0 - alpha) * face_comp
-            distances.append((dist, r))
+        q_small = masks_small[i]
+        c_masks  = masks_small[cand_idx]
+        intersections = (c_masks & q_small).sum(axis=(1, 2)).astype(np.float32)
+        unions        = (c_masks | q_small).sum(axis=(1, 2)).astype(np.float32)
+        ious = np.where(unions > 0, intersections / unions, 1.0)
 
-        distances.sort(key=lambda x: x[0])
-        neighbors = [r for _, r in distances[:n]]
+        if query.face_centroid is None:
+            dists = 1.0 - ious
+        else:
+            qfc = np.array(query.face_centroid, dtype=np.float32)
+            face_dists = np.sqrt(((face_centroids[cand_idx] - qfc) ** 2).sum(axis=1))
+            if yaw_weight > 0 and query.face_yaw is not None:
+                yaw_dists_raw = np.abs(face_yaws[cand_idx] - query.face_yaw) / 2.0
+                yaw_dists = np.where(np.isnan(yaw_dists_raw), face_dists, yaw_dists_raw)
+                face_comp = (1.0 - yaw_weight) * face_dists + yaw_weight * yaw_dists
+            else:
+                face_comp = face_dists
+            dists = alpha * (1.0 - ious) + (1.0 - alpha) * face_comp
+
+        top_idx = np.argpartition(dists, n)[:n]
+        neighbors = [records[cand_idx[k]] for k in top_idx]
 
         pred_cx = float(np.mean([r.crop_center[0] for r in neighbors]))
         pred_cy = float(np.mean([r.crop_center[1] for r in neighbors]))
@@ -70,7 +99,8 @@ def _gradient_descent(records, alpha0, yw0, n, lr=0.05, h=0.01, max_iter=50, tol
     prev_err = float('inf')
 
     for iteration in range(max_iter):
-        err = _cross_val_error(records, alpha, yw, n)
+        with tqdm(total=len(records), desc=f"  GD iter {iteration:2d} centre", leave=False) as pb:
+            err = _cross_val_error(records, alpha, yw, n, pbar=pb)
         print(f"  GD iter {iteration:2d}: alpha={alpha:.4f}  yaw_weight={yw:.4f}  error={err:.5f}")
         if abs(prev_err - err) < tol:
             break
@@ -82,15 +112,23 @@ def _gradient_descent(records, alpha0, yw0, n, lr=0.05, h=0.01, max_iter=50, tol
         yw_hi = min(1.0, yw + h)
         yw_lo = max(0.0, yw - h)
 
-        grad_alpha = (_cross_val_error(records, a_hi, yw, n) -
-                      _cross_val_error(records, a_lo, yw, n)) / (a_hi - a_lo)
-        grad_yw = (_cross_val_error(records, alpha, yw_hi, n) -
-                   _cross_val_error(records, alpha, yw_lo, n)) / (yw_hi - yw_lo)
+        with tqdm(total=len(records), desc=f"  GD iter {iteration:2d} grad α+", leave=False) as pb:
+            e_a_hi = _cross_val_error(records, a_hi, yw, n, pbar=pb)
+        with tqdm(total=len(records), desc=f"  GD iter {iteration:2d} grad α-", leave=False) as pb:
+            e_a_lo = _cross_val_error(records, a_lo, yw, n, pbar=pb)
+        with tqdm(total=len(records), desc=f"  GD iter {iteration:2d} grad yw+", leave=False) as pb:
+            e_yw_hi = _cross_val_error(records, alpha, yw_hi, n, pbar=pb)
+        with tqdm(total=len(records), desc=f"  GD iter {iteration:2d} grad yw-", leave=False) as pb:
+            e_yw_lo = _cross_val_error(records, alpha, yw_lo, n, pbar=pb)
+
+        grad_alpha = (e_a_hi - e_a_lo) / (a_hi - a_lo)
+        grad_yw    = (e_yw_hi - e_yw_lo) / (yw_hi - yw_lo)
 
         alpha = max(0.0, min(1.0, alpha - lr * grad_alpha))
         yw = max(0.0, min(1.0, yw - lr * grad_yw))
 
-    final_err = _cross_val_error(records, alpha, yw, n)
+    with tqdm(total=len(records), desc="  GD final eval", leave=False) as pb:
+        final_err = _cross_val_error(records, alpha, yw, n, pbar=pb)
     return alpha, yw, final_err
 
 
@@ -142,12 +180,17 @@ def main():
 
     print(f"\nPhase 1: coarse grid search ({args.grid_steps}×{args.grid_steps} = {args.grid_steps**2} evaluations)")
     total = args.grid_steps ** 2
-    with tqdm(total=total, desc="Grid search") as pbar:
+    done = 0
+    with tqdm(total=total, desc="Grid search", position=0) as outer:
         for alpha in alphas:
             for yw in yaw_weights:
-                err = _cross_val_error(records, float(alpha), float(yw), args.n)
+                done += 1
+                with tqdm(total=len(records),
+                          desc=f"  eval {done}/{total}  α={float(alpha):.2f} yw={float(yw):.2f}",
+                          position=1, leave=False) as inner:
+                    err = _cross_val_error(records, float(alpha), float(yw), args.n, pbar=inner)
                 grid_results[(float(alpha), float(yw))] = err
-                pbar.update(1)
+                outer.update(1)
 
     # Display grid
     print("\n  Grid errors (rows=alpha 0→1, cols=yaw_weight 0→1):")
