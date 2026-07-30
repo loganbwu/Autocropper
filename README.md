@@ -11,10 +11,10 @@ Review and crop CR3 RAW files using AI detection, then write Lightroom-compatibl
 
 ## Installation
 
-Requires [rye](https://rye.astral.sh/).
+Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
-rye sync
+uv sync
 ```
 
 ## Usage
@@ -22,7 +22,7 @@ rye sync
 ### Web review UI
 
 ```bash
-rye run autocropper
+uv run autocropper
 ```
 
 Opens a browser-based review interface. Select a folder of CR3 files, then step through each photo using keyboard shortcuts:
@@ -46,19 +46,19 @@ The buffer indicator shows **green** slots for ML crops and **blue** for classic
 
 ```bash
 # Process all CR3 files in the default folder (~/Desktop/Test)
-rye run autocrop
+uv run autocrop
 
 # Process a specific folder
-rye run autocrop /path/to/photos
+uv run autocrop /path/to/photos
 
 # Use ML crop mode with a training dataset
-rye run autocrop --dataset data/training.pkl /path/to/photos
+uv run autocrop --dataset data/training.pkl /path/to/photos
 
 # Include all detected people (default: main subject only)
-rye run autocrop --all-people
+uv run autocrop --all-people
 
 # Re-crop files that already have crops
-rye run autocrop --force
+uv run autocrop --force
 ```
 
 When `--dataset` is supplied, ML crop prediction is attempted for each image; photos where ML fails (no person, no face, insufficient neighbours) fall back to classic GDINO+SAM crop automatically.
@@ -102,7 +102,7 @@ where `alpha` is stored in the dataset (default 0.5). If no face keypoints are d
 Collect a folder of already-cropped images. Both CR3 files (crop read from XMP sidecar) and raster images (JPEG, PNG, TIFF — full frame treated as the crop) are accepted.
 
 ```bash
-rye run build-training-dataset ~/path/to/cropped/photos output.pkl
+uv run build-training-dataset ~/path/to/cropped/photos output.pkl
 ```
 
 The script runs Grounding DINO + SAM 2.1 + ViTPose on each image and saves a `TrainingDataset` to `output.pkl`. Images where no person or face is detected are skipped.
@@ -110,7 +110,7 @@ The script runs Grounding DINO + SAM 2.1 + ViTPose on each image and saves a `Tr
 ### Optimising the alpha weight
 
 ```bash
-rye run optimize-weights output.pkl
+uv run optimize-weights output.pkl
 ```
 
 Runs leave-one-out cross-validation over `alpha ∈ [0.0, 0.1, …, 1.0]` and reports the value with the lowest mean crop-centre prediction error. The dataset can then be reloaded with the updated alpha.
@@ -135,7 +135,7 @@ Runs leave-one-out cross-validation over `alpha ∈ [0.0, 0.1, …, 1.0]` and re
 ### diagnostic-knn
 
 ```bash
-rye run diagnostic-knn <input_folder> <dataset.pkl> <output_folder> [--n N] [--cols C]
+uv run diagnostic-knn <input_folder> <dataset.pkl> <output_folder> [--n N] [--cols C]
 ```
 
 For each image, produces a composite JPEG showing:
@@ -146,7 +146,7 @@ For each image, produces a composite JPEG showing:
 ### diagnostic-masks
 
 ```bash
-rye run diagnostic-masks <input_folder> <output_folder> [--n N] [--yolo-padding P]
+uv run diagnostic-masks <input_folder> <output_folder> [--n N] [--yolo-padding P]
 ```
 
 Produces a five-panel JPEG per image comparing segmentation strategies (useful for evaluating detector quality):
@@ -188,7 +188,7 @@ Key constants in `src/autocropper/ml_crop.py`:
 ## Requirements
 
 - Python 3.11+
-- rye
+- uv
 - torch, transformers, torchvision, accelerate
 - timm, pillow, rawpy, flask, tqdm, scipy
 - ultralytics (for `diagnostic-masks` only)
