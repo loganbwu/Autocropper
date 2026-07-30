@@ -21,42 +21,70 @@
 
 <!-- Review UI -->
 <div id="header">
-  <div id="filename"></div>
-  <div id="buffer-control">
-    <span class="buffer-label">Buffer:</span>
-    <span id="buffer-ready">0</span><span class="buffer-sep">/</span><input id="review-prefetch" type="number" min="{{ prefetch_min }}" max="{{ prefetch_max }}"
-           value="{{ prefetch_default }}" title="Buffer size" oninput="setPrefetch(this.value)">
+  <div id="header-left">
+    <div id="filename"></div>
+    <div id="buffer-control">
+      <span class="buffer-label">Buffer:</span>
+      <span id="buffer-ready">0</span><span class="buffer-sep">/</span><input id="review-prefetch" type="number" min="{{ prefetch_min }}" max="{{ prefetch_max }}"
+             value="{{ prefetch_default }}" title="Buffer size" oninput="setPrefetch(this.value)">
+    </div>
+    <div id="margin-control">
+      <span class="buffer-label">Margin:</span>
+      <input id="review-margin" type="number" min="{{ margin_min }}" max="{{ margin_max }}"
+             value="{{ margin_default }}" title="Crop margin %" oninput="setMargin(this.value)">
+      %
+    </div>
+    <div id="grid-control">
+      <button id="grid-toggle" title="Toggle rule-of-thirds grid (G)" onclick="toggleGrid()"></button>
+      <label id="grid-label" for="grid-toggle" onclick="toggleGrid()">Grid</label>
+    </div>
+    <div id="ig-control">
+      <button id="ig-toggle" title="Toggle 4:5 Instagram portrait crop (I)" onclick="toggleIg()"></button>
+      <label id="ig-label" for="ig-toggle" onclick="toggleIg()">4:5</label>
+    </div>
+    <div id="ml-control">
+      <label id="ml-file-label" for="ml-file" title="Upload training dataset (.pkl)">dataset</label>
+      <input id="ml-file" type="file" accept=".pkl" onchange="uploadDataset(this)">
+      <span id="ml-status"></span>
+      <button id="ml-toggle" title="Enable ML crop mode" onclick="toggleMlMode()" disabled></button>
+      <label id="ml-label" for="ml-toggle" onclick="toggleMlMode()">ML</label>
+    </div>
+    <span id="ml-badge">ML</span>
+    <span id="noop-badge">no-op</span>
+    <span id="no-person-badge">no person</span>
   </div>
-  <div id="margin-control">
-    <span class="buffer-label">Margin:</span>
-    <input id="review-margin" type="number" min="{{ margin_min }}" max="{{ margin_max }}"
-           value="{{ margin_default }}" title="Crop margin %" oninput="setMargin(this.value)">
-    %
+  <div id="key-hints">
+    <div class="key-hint"><span class="key-badge">1</span> Keep original</div>
+    <div class="key-hint"><span class="key-badge">2</span> <span id="crop-hint-text">Apply crop</span></div>
+    <div class="key-hint" id="help-hint" onclick="openHelpModal()" title="Keyboard shortcuts"><span class="key-badge">?</span> Shortcuts</div>
   </div>
-  <div id="grid-control">
-    <button id="grid-toggle" title="Toggle rule-of-thirds grid (G)" onclick="toggleGrid()"></button>
-    <label id="grid-label" for="grid-toggle" onclick="toggleGrid()">Grid</label>
+  <div id="header-right">
+    <button class="btn-secondary btn-fs" id="btn-fullscreen" onclick="toggleFullscreen()">Fullscreen</button>
+    <div id="progress"></div>
   </div>
-  <div id="ig-control">
-    <button id="ig-toggle" title="Toggle 4:5 Instagram portrait crop (I)" onclick="toggleIg()"></button>
-    <label id="ig-label" for="ig-toggle" onclick="toggleIg()">4:5</label>
-  </div>
-  <div id="ml-control">
-    <label id="ml-file-label" for="ml-file" title="Upload training dataset (.pkl)">dataset</label>
-    <input id="ml-file" type="file" accept=".pkl" onchange="uploadDataset(this)">
-    <span id="ml-status"></span>
-    <button id="ml-toggle" title="Enable ML crop mode" onclick="toggleMlMode()" disabled></button>
-    <label id="ml-label" for="ml-toggle" onclick="toggleMlMode()">ML</label>
-  </div>
-  <span id="ml-badge">ML</span>
-  <span id="noop-badge">no-op</span>
-  <span id="no-person-badge">no person</span>
-  <div class="key-hint"><span class="key-badge">1</span> Keep original</div>
-  <div class="key-hint"><span class="key-badge">2</span> <span id="crop-hint-text">Apply crop</span></div>
-  <button class="btn-secondary btn-fs" id="btn-fullscreen" onclick="toggleFullscreen()">Fullscreen</button>
-  <div id="progress"></div>
 </div>
 <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+
+<!-- Keyboard shortcuts help modal -->
+<div id="help-modal-backdrop" class="hidden" onclick="closeHelpModal()">
+  <div id="help-modal" onclick="event.stopPropagation()">
+    <div id="help-modal-title">Keyboard Shortcuts</div>
+    <table id="help-table">
+      <tr><td class="key-cell"><span class="key-badge">1</span></td><td>Keep original (skip crop)</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">2</span></td><td>Apply crop</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">&larr;</span> <span class="key-badge">&rarr;</span></td><td>Navigate to previous / next photo</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">G</span></td><td>Toggle rule-of-thirds grid</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">I</span></td><td>Toggle 4:5 Instagram portrait guide</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">F</span></td><td>Toggle fullscreen</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">Space</span></td><td>Zoom out to maximum, keeping centre</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">?</span></td><td>Toggle this help</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">Esc</span></td><td>Close this help</td></tr>
+      <tr><td class="key-cell">Scroll / Pinch</td><td>Zoom in / out on the crop</td></tr>
+      <tr><td class="key-cell">Drag / Two-finger scroll</td><td>Pan the crop</td></tr>
+      <tr><td class="key-cell">Click thumbnail</td><td>Jump to that photo</td></tr>
+    </table>
+  </div>
+</div>
 
 <div id="panels">
   <div class="panel" id="panel-orig">
@@ -375,16 +403,28 @@
     }
     const cx = (x1 + x2) / 2;
     const cy = (y1 + y2) / 2;
+    // Canvas pixels get scaled to fit the panel via CSS, so a fixed canvas-space
+    // lineWidth shrinks to near-invisible when zoomed out. Scale it up so overlay
+    // strokes stay a constant width in screen pixels regardless of display scale.
+    const canvasPxPerScreenPx = canvas.clientWidth ? cw / canvas.clientWidth : 1;
     _cropCtx.save();
     _cropCtx.translate(cw / 2, ch / 2);
     if (angle) _cropCtx.rotate(angle * Math.PI / 180);
     _cropCtx.drawImage(_cropImage, -cx, -cy);
+    // Thin border tracing the true image edges (drawn in the same rotated
+    // coordinate frame as the image itself, so it rotates with the crop).
+    // Only the portion within the visible canvas actually renders — a full
+    // border means no crop is applied on any side; a single edge means
+    // that side has hit the image boundary (the zoom-out limit).
+    _cropCtx.strokeStyle = 'rgba(120, 190, 255, 0.6)';
+    _cropCtx.lineWidth = 4 * canvasPxPerScreenPx;
+    _cropCtx.strokeRect(-cx + 0.5, -cy + 0.5, _origSize.w - 1, _origSize.h - 1);
     _cropCtx.restore();
 
     if (_showGrid) {
       _cropCtx.save();
       _cropCtx.strokeStyle = 'rgba(255,255,255,0.4)';
-      _cropCtx.lineWidth = 1;
+      _cropCtx.lineWidth = canvasPxPerScreenPx;
       for (let i = 1; i <= 2; i++) {
         _cropCtx.beginPath();
         _cropCtx.moveTo(cw * i / 3, 0);
@@ -413,8 +453,8 @@
       _cropCtx.fillStyle = 'rgba(0,0,0,0.45)';
       if (igX > 0) { _cropCtx.fillRect(0, 0, igX, ch); _cropCtx.fillRect(igX + igW, 0, igX, ch); }
       if (igY > 0) { _cropCtx.fillRect(igX, 0, igW, igY); _cropCtx.fillRect(igX, igY + igH, igW, igY); }
-      _cropCtx.strokeStyle = 'rgba(255,255,255,0.75)';
-      _cropCtx.lineWidth = 1;
+      _cropCtx.strokeStyle = 'rgba(255,255,255,0.4)';
+      _cropCtx.lineWidth = canvasPxPerScreenPx;
       _cropCtx.strokeRect(igX + 0.5, igY + 0.5, igW - 1, igH - 1);
       _cropCtx.restore();
     }
@@ -647,20 +687,37 @@
     // No polling needed — SSE will push the next state when the consumer is ready.
   }
 
+  let _navigating = false;
   function navigate(fileIdx) {
-    if (_fileIdx === null || fileIdx < 0 || fileIdx >= _totalFiles) return;
+    if (_navigating || _fileIdx === null || fileIdx < 0 || fileIdx >= _totalFiles) return;
+    _navigating = true;
     fetch('/api/navigate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({file_idx: fileIdx}),
-    });
+    }).finally(() => { _navigating = false; });
   }
 
+  function openHelpModal() { document.getElementById('help-modal-backdrop').classList.remove('hidden'); }
+  function closeHelpModal() { document.getElementById('help-modal-backdrop').classList.add('hidden'); }
+  function toggleHelpModal() { document.getElementById('help-modal-backdrop').classList.toggle('hidden'); }
+
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closeHelpModal(); return; }
+    if (e.key === '?') {
+      if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+      toggleHelpModal(); e.preventDefault(); return;
+    }
+    if (!document.getElementById('help-modal-backdrop').classList.contains('hidden')) return;
     if (e.key === 'f' || e.key === 'F') { toggleFullscreen(); e.preventDefault(); return; }
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
       navigate(e.key === 'ArrowLeft' ? _fileIdx - 1 : _fileIdx + 1);
+      e.preventDefault(); return;
+    }
+    if (e.key === ' ') {
+      if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+      _zoomByFactor(Infinity);
       e.preventDefault(); return;
     }
     if (e.key === '1') decide('skip');
@@ -690,6 +747,27 @@
     return { x1: cx - hw, y1: cy - hh, x2: cx + hw, y2: cy + hh };
   }
 
+  // When a pan would push the crop centre past the image edge for the box's
+  // current size, shrink the box (zoom in) just enough to let the centre
+  // keep moving in that direction, rather than freezing at the boundary —
+  // so reaching the edge while panning doesn't require a separate zoom
+  // gesture. Bottoms out at the same minimum zoom-in size as `_zoomByFactor`.
+  function _panWithAutoZoom(coords, angle) {
+    const cw = coords.x2 - coords.x1, ch = coords.y2 - coords.y1;
+    const cx = (coords.x1 + coords.x2) / 2, cy = (coords.y1 + coords.y2) / 2;
+    const cosA = Math.abs(Math.cos(angle * Math.PI / 180));
+    const sinA = Math.abs(Math.sin(angle * Math.PI / 180));
+    const bhw = (cw / 2) * cosA + (ch / 2) * sinA;
+    const bhh = (cw / 2) * sinA + (ch / 2) * cosA;
+    const fitScale = Math.min(1,
+      Math.min(cx, _origSize.w - cx) / bhw,
+      Math.min(cy, _origSize.h - cy) / bhh
+    );
+    const s = Math.max(100 / Math.min(cw, ch), fitScale);
+    const ncw = cw * s, nch = ch * s;
+    return _constrainCrop({x1: cx - ncw / 2, y1: cy - nch / 2, x2: cx + ncw / 2, y2: cy + nch / 2}, angle);
+  }
+
   // ── Crop drag ──────────────────────────────────────────────
 
   document.getElementById('img-crop').addEventListener('mousedown', (e) => {
@@ -707,7 +785,7 @@
     const scale = cw / cropEl.clientWidth;
     const nx1 = x1 - (e.clientX - _dragState.startX) * scale;
     const ny1 = y1 - (e.clientY - _dragState.startY) * scale;
-    _currentCropCoords = _constrainCrop({x1: nx1, y1: ny1, x2: nx1 + cw, y2: ny1 + ch}, _cropAngle);
+    _currentCropCoords = _panWithAutoZoom({x1: nx1, y1: ny1, x2: nx1 + cw, y2: ny1 + ch}, _cropAngle);
     if (!_rafId) {
       _rafId = requestAnimationFrame(() => {
         _rafId = null;
@@ -755,21 +833,39 @@
         const g = _pendingGesture;
         _pendingGesture = null;
         if (!g || !_currentCropCoords) return;
-        const {x1, y1, x2, y2} = _currentCropCoords;
-        const cw = x2 - x1, ch = y2 - y1;
         if (g.type === 'zoom') {
-          const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
-          const s = Math.max(100 / Math.min(cw, ch),
-            Math.min(Math.min(_origSize.w / cw, _origSize.h / ch), g.factor));
-          const ncw = cw * s, nch = ch * s;
-          _currentCropCoords = _constrainCrop({x1: cx - ncw / 2, y1: cy - nch / 2, x2: cx + ncw / 2, y2: cy + nch / 2}, _cropAngle);
+          _zoomByFactor(g.factor);
         } else {
-          _currentCropCoords = _constrainCrop({x1: x1 + g.dx, y1: y1 + g.dy, x2: x2 + g.dx, y2: y2 + g.dy}, _cropAngle);
+          const {x1, y1, x2, y2} = _currentCropCoords;
+          _currentCropCoords = _panWithAutoZoom({x1: x1 + g.dx, y1: y1 + g.dy, x2: x2 + g.dx, y2: y2 + g.dy}, _cropAngle);
+          _drawCrop(_currentCropCoords, _cropAngle);
         }
-        _drawCrop(_currentCropCoords, _cropAngle);
       });
     }
   }, { passive: false });
+
+  // Scales the crop box around its current centre by `factor` (>1 zooms out,
+  // <1 zooms in), clamped to the min zoom-in size and the max zoom-out size
+  // that still fits within the image at the box's *current* centre — pass
+  // Infinity to jump straight to that maximum (spacebar shortcut).
+  function _zoomByFactor(factor) {
+    if (!_currentCropCoords || !_origSize) return;
+    const {x1, y1, x2, y2} = _currentCropCoords;
+    const cw = x2 - x1, ch = y2 - y1;
+    const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+    const cosA = Math.abs(Math.cos(_cropAngle * Math.PI / 180));
+    const sinA = Math.abs(Math.sin(_cropAngle * Math.PI / 180));
+    const bhw = (cw / 2) * cosA + (ch / 2) * sinA;
+    const bhh = (cw / 2) * sinA + (ch / 2) * cosA;
+    const maxScale = Math.min(
+      Math.min(cx, _origSize.w - cx) / bhw,
+      Math.min(cy, _origSize.h - cy) / bhh
+    );
+    const s = Math.max(100 / Math.min(cw, ch), Math.min(maxScale, factor));
+    const ncw = cw * s, nch = ch * s;
+    _currentCropCoords = _constrainCrop({x1: cx - ncw / 2, y1: cy - nch / 2, x2: cx + ncw / 2, y2: cy + nch / 2}, _cropAngle);
+    _drawCrop(_currentCropCoords, _cropAngle);
+  }
 
   // ── Fullscreen ─────────────────────────────────────────────
 

@@ -205,6 +205,13 @@ class ReviewState:
                 with self._prefetch_cv:
                     while self._prefetch_q.qsize() >= self.prefetch:
                         self._prefetch_cv.wait()
+                # Re-check right before enqueueing (not just at the top of the loop):
+                # navigate()/ml-mode-switch may have superseded this generation while
+                # compute_crop was running or while waiting for buffer space above, and
+                # without this check a stale result could land in a freshly-drained queue.
+                if self._producer_gen != gen:
+                    return
+                result["_gen"] = gen
                 self._prefetch_q.put(result)
                 _notify_sse()
         finally:
@@ -230,6 +237,13 @@ class ReviewState:
                 _notify_sse()
                 print(f"{_GREEN}Session complete — cropped: {self.accepted}, skipped: {self.rejected}, no person/already done: {self.skipped}{_RESET}")
                 return
+
+            with self._lock:
+                stale = result.get("_gen") != self._producer_gen
+            if stale:
+                # Leaked from a producer generation superseded by navigate()/ml-mode
+                # switch after this result was already enqueued; drop it silently.
+                continue
 
             with self._lock:
                 if not result.get("ml_crop"):
@@ -271,13 +285,47 @@ class ReviewState:
             _notify_sse()
 
     def navigate(self, file_idx):
-        """Restart the producer from file_idx (0-based into self.files)."""
+        """Jump to file_idx (0-based into self.files).
+
+        If it's already fully processed and sitting in the prefetch buffer, walk the
+        consumer forward through it via ordinary discards — no reprocessing, and the
+        rest of the buffer and the running producer are left untouched. Otherwise
+        (navigating backward, or ahead of what's been buffered so far) fall back to
+        draining the buffer and restarting the producer from file_idx.
+        """
         if not (0 <= file_idx < len(self.files)):
             return False
+
+        with self._lock:
+            current_item = self.current
+            if current_item is not None and current_item.get("file_idx") == file_idx:
+                return True  # already showing the requested photo
+            queued = list(self._prefetch_q.queue)  # peek only — consumer is blocked
+                                                    # on _decision_q while current_item
+                                                    # is set, so this can't race a pop
+
+        skip_count = None
+        for i, item in enumerate(queued):
+            if item is None:
+                break  # producer sentinel — nothing buffered beyond this point
+            if item.get("file_idx") == file_idx:
+                skip_count = i
+                break
+
+        if skip_count is not None:
+            # Fast path: already buffered — discard our way to it without touching
+            # the producer. One discard per skipped item, plus one more to move off
+            # the currently displayed photo if there is one.
+            n = skip_count + (1 if current_item is not None else 0)
+            for _ in range(n):
+                self._decision_q.put(("_discard", None, 0))
+            _notify_sse()
+            return True
+
+        # Slow path: not buffered — restart the producer from file_idx.
         with self._lock:
             self._producer_gen += 1
             new_gen = self._producer_gen
-            current_item = self.current
             self.current = None
             self.status = "loading"
         if current_item is not None:

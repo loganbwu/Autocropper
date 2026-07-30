@@ -77,10 +77,17 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   padding: 10px 20px;
   background: #1a1a1a;
   border-bottom: 1px solid #333;
   font-size: 14px;
+}
+
+#header-left, #key-hints, #header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
 #filename {
@@ -352,6 +359,58 @@ body {
   padding: 1px 6px;
   font-size: 12px;
   font-weight: 600;
+  font-family: monospace;
+  color: var(--white);
+}
+
+#help-hint { cursor: pointer; }
+#help-hint:hover { color: var(--white); }
+
+/* ── Keyboard shortcuts help modal ── */
+
+#help-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+}
+
+#help-modal-backdrop.hidden { display: none; }
+
+#help-modal {
+  background: #1e1e1e;
+  border: 1px solid #444;
+  padding: 28px 32px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow: auto;
+}
+
+#help-modal-title {
+  font-family: 'Oswald', sans-serif;
+  font-size: 18px;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--white);
+  margin-bottom: 16px;
+}
+
+#help-table { border-collapse: collapse; }
+
+#help-table td {
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--paragraph-text-color);
+}
+
+#help-table tr:hover { background: rgba(255,255,255,0.04); }
+
+#help-table .key-cell {
+  white-space: nowrap;
   color: var(--white);
 }
 
