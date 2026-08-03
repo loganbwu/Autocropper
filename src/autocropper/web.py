@@ -104,9 +104,12 @@ class ReviewState:
     """Producer/consumer design: producer pre-processes up to PREFETCH images ahead,
     consumer presents them and waits for decisions. The user rarely waits."""
 
-    def __init__(self, files, models, all_people=False, prefetch=PREFETCH_DEFAULT, pre_skipped=0,
-                 ml_mode=False, ml_dataset=None, skip_noop=False, skip_no_person=False):
-        self.files = files
+    def __init__(self, files, models, all_files=None, all_people=False, prefetch=PREFETCH_DEFAULT,
+                 pre_skipped=0, ml_mode=False, ml_dataset=None, skip_noop=False, skip_no_person=False):
+        self.files = files            # still-to-review subset; drives the default forward pass
+        self.all_files = all_files if all_files is not None else files  # whole folder; drives the
+                                       # filmstrip (total_files/file_idx/thumbnails) and navigate()'s
+                                       # target range, so already-reviewed photos stay reachable
         self.models = models
         self.all_people = all_people
         self.prefetch = prefetch
@@ -140,7 +143,7 @@ class ReviewState:
         self._producer_gen = 0  # incremented on mode switch; old producer exits, new one starts
         self._producer_thread = None
         self._decided_paths: set = set()  # CR3 paths the user has explicitly accepted or rejected
-        self._file_index: dict = {f: i for i, f in enumerate(files)}
+        self._all_index: dict = {f: i for i, f in enumerate(self.all_files)}
         self._thumb_cache: dict = {}  # file_idx -> JPEG bytes
 
         self._producer_thread = threading.Thread(
@@ -198,7 +201,7 @@ class ReviewState:
                     print(f"{_YELLOW}  No person (auto-skipped): {cr3.name}{_RESET}")
                     continue
 
-                result["file_idx"] = self._file_index.get(cr3, 0)
+                result["file_idx"] = self._all_index.get(cr3, 0)
                 if is_noop:
                     print(f"{_YELLOW}  No-op crop: {cr3.name}{_RESET}")
                 elif is_no_person:
@@ -315,15 +318,20 @@ class ReviewState:
             _notify_sse()
 
     def navigate(self, file_idx):
-        """Jump to file_idx (0-based into self.files).
+        """Jump to file_idx (0-based into self.all_files — the whole folder, not just
+        the still-to-review subset, so a photo already decided in this or a prior
+        session is still reachable from the filmstrip).
 
         If it's already fully processed and sitting in the prefetch buffer, walk the
         consumer forward through it via ordinary discards — no reprocessing, and the
         rest of the buffer and the running producer are left untouched. Otherwise
         (navigating backward, or ahead of what's been buffered so far) fall back to
-        draining the buffer and restarting the producer from file_idx.
+        draining the buffer and restarting the producer from file_idx — recomputing
+        a fresh crop even if this photo already has a decision recorded, since a
+        deliberate jump back to it means the user wants to look at (and possibly
+        redo) it.
         """
-        if not (0 <= file_idx < len(self.files)):
+        if not (0 <= file_idx < len(self.all_files)):
             return False
 
         with self._lock:
@@ -367,7 +375,7 @@ class ReviewState:
                 break
         with self._prefetch_cv:
             self._prefetch_cv.notify_all()
-        self._restart_producer(self.files[file_idx:], new_gen)
+        self._restart_producer(self.all_files[file_idx:], new_gen)
         _notify_sse()
         return True
 
@@ -405,7 +413,7 @@ class ReviewState:
                     "idx": reviewed_count,
                     "producer_idx": self.producer_processed,
                     "total": self.total_eligible,
-                    "total_files": len(self.files),
+                    "total_files": len(self.all_files),
                     "buffered": buffered,
                     "buffer_types": buffer_types,
                     "prefetch": self.prefetch,
@@ -418,7 +426,7 @@ class ReviewState:
                 "filename": d["cr3_path"].name,
                 "idx": reviewed_count + 1,
                 "total": self.total_eligible,
-                "total_files": len(self.files),
+                "total_files": len(self.all_files),
                 "file_idx": d.get("file_idx", 0),
                 "buffered": buffered,
                 "buffer_types": buffer_types,
@@ -435,7 +443,7 @@ class ReviewState:
             return state
 
     def get_thumbnail(self, file_idx: int):
-        """Return JPEG bytes for file_idx (0-based into self.files), resized to 90 px tall.
+        """Return JPEG bytes for file_idx (0-based into self.all_files), resized to 90 px tall.
         Caches results in memory for the lifetime of the session."""
         if file_idx in self._thumb_cache:
             return self._thumb_cache[file_idx]
@@ -443,7 +451,7 @@ class ReviewState:
             import io as _io
             from PIL import Image as _Image
             from .main import apply_orientation, extract_preview_image, get_orientation
-            cr3 = self.files[file_idx]
+            cr3 = self.all_files[file_idx]
             img = apply_orientation(extract_preview_image(cr3), get_orientation(cr3))
             w, h = img.size
             new_h = 90
@@ -571,6 +579,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 _notify_sse()
                 app.config["review_state"] = ReviewState(
                     to_review, _models,
+                    all_files=cr3_files,
                     pre_skipped=len(already_reviewed),
                     all_people=app.config["all_people"],
                     ml_mode=use_ml,
@@ -774,7 +783,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
     @app.route("/api/thumbnail/<int:file_idx>")
     def api_thumbnail(file_idx):
         state = app.config["review_state"]
-        if state is None or not (0 <= file_idx < len(state.files)):
+        if state is None or not (0 <= file_idx < len(state.all_files)):
             return "", 404
         data = state.get_thumbnail(file_idx)
         if data is None:
