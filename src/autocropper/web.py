@@ -138,11 +138,14 @@ class ReviewState:
         self._decision_q = queue.Queue()
         self._lock = threading.Lock()
         self._producer_gen = 0  # incremented on mode switch; old producer exits, new one starts
+        self._producer_thread = None
         self._decided_paths: set = set()  # CR3 paths the user has explicitly accepted or rejected
         self._file_index: dict = {f: i for i, f in enumerate(files)}
         self._thumb_cache: dict = {}  # file_idx -> JPEG bytes
 
-        threading.Thread(target=self._producer, args=(self.files, self._producer_gen), daemon=True).start()
+        self._producer_thread = threading.Thread(
+            target=self._producer, args=(self.files, self._producer_gen), daemon=True)
+        self._producer_thread.start()
         threading.Thread(target=self._consumer, daemon=True).start()
 
     def _producer(self, files, gen):
@@ -217,6 +220,33 @@ class ReviewState:
         finally:
             if self._producer_gen == gen:
                 self._prefetch_q.put(None)
+
+    def _restart_producer(self, files, gen):
+        """Start a new producer generation, guaranteeing the previous one has
+        fully stopped making model calls before this one makes any.
+
+        The per-item `_producer_gen` check only runs between items — a producer
+        thread that's already mid model-inference on its current photo won't
+        notice the generation bump until that call returns, which can take
+        seconds. Starting the new producer immediately would then run two
+        threads' inference calls concurrently; the ML models (GDINO/SAM/ViTPose,
+        via PyTorch's Metal/MPS backend) aren't safe for concurrent use across
+        threads and this reliably crashes the whole process (Metal command
+        encoder assertion), not just raises a catchable exception. So the new
+        thread joins the old one first — the old thread will exit at its next
+        checkpoint since `gen` has already changed — and only then starts
+        actually processing.
+        """
+        old_thread = self._producer_thread
+
+        def _run():
+            if old_thread is not None:
+                old_thread.join()
+            self._producer(files, gen)
+
+        thread = threading.Thread(target=_run, daemon=True)
+        self._producer_thread = thread
+        thread.start()
 
     def set_prefetch(self, n):
         with self._lock:
@@ -337,11 +367,7 @@ class ReviewState:
                 break
         with self._prefetch_cv:
             self._prefetch_cv.notify_all()
-        threading.Thread(
-            target=self._producer,
-            args=(self.files[file_idx:], new_gen),
-            daemon=True,
-        ).start()
+        self._restart_producer(self.files[file_idx:], new_gen)
         _notify_sse()
         return True
 
@@ -709,11 +735,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
 
                 # Start fresh from photo #1 of files the user has not yet decided on.
                 remaining = [f for f in state.files if f not in state._decided_paths]
-                threading.Thread(
-                    target=state._producer,
-                    args=(remaining, new_gen),
-                    daemon=True,
-                ).start()
+                state._restart_producer(remaining, new_gen)
                 _notify_sse()
 
         return jsonify({"ok": True, "ml_mode": enabled})
