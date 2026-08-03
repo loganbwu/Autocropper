@@ -81,7 +81,7 @@
       <tr><td class="key-cell"><span class="key-badge">I</span></td><td>Toggle 4:5 Instagram portrait guide</td></tr>
       <tr><td class="key-cell"><span class="key-badge">4</span></td><td>Toggle crop to 4:5 portrait / revert</td></tr>
       <tr><td class="key-cell"><span class="key-badge">F</span></td><td>Toggle fullscreen</td></tr>
-      <tr><td class="key-cell"><span class="key-badge">Space</span></td><td>Zoom out to maximum size</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">Space</span></td><td>Zoom out to maximum, keeping centre</td></tr>
       <tr><td class="key-cell"><span class="key-badge">?</span></td><td>Toggle this help</td></tr>
       <tr><td class="key-cell"><span class="key-badge">Esc</span></td><td>Close this help</td></tr>
       <tr><td class="key-cell">Scroll / Pinch</td><td>Zoom in / out on the crop</td></tr>
@@ -892,7 +892,7 @@
     }
     if (e.key === ' ') {
       if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
-      _zoomByFactor(Infinity);
+      _zoomOutMaxKeepCentre();
       e.preventDefault(); return;
     }
     if (e.key === '1') decide('skip');
@@ -1041,6 +1041,30 @@
     const bhh = (cw / 2) * sinA + (ch / 2) * cosA;
     const imageMaxScale = Math.min(_origSize.w / (2 * bhw), _origSize.h / (2 * bhh));
     const s = Math.max(100 / Math.min(cw, ch), Math.min(imageMaxScale, factor));
+    const ncw = cw * s, nch = ch * s;
+    _currentCropCoords = _constrainCrop({x1: cx - ncw / 2, y1: cy - nch / 2, x2: cx + ncw / 2, y2: cy + nch / 2}, _cropAngle);
+    _drawCrop(_currentCropCoords, _cropAngle);
+  }
+
+  // Spacebar shortcut: zooms out as far as possible *without* moving the
+  // crop's centre — unlike _zoomByFactor(Infinity), which reaches the true
+  // maximum size but may recentre the box toward the image centre. Here the
+  // cap is the old distance-to-nearest-edge limit, so a crop already close
+  // to one edge may not reach full image size, but its framing is preserved.
+  function _zoomOutMaxKeepCentre() {
+    if (!_currentCropCoords || !_origSize) return;
+    const {x1, y1, x2, y2} = _currentCropCoords;
+    const cw = x2 - x1, ch = y2 - y1;
+    const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+    const cosA = Math.abs(Math.cos(_cropAngle * Math.PI / 180));
+    const sinA = Math.abs(Math.sin(_cropAngle * Math.PI / 180));
+    const bhw = (cw / 2) * cosA + (ch / 2) * sinA;
+    const bhh = (cw / 2) * sinA + (ch / 2) * cosA;
+    const maxScale = Math.min(
+      Math.min(cx, _origSize.w - cx) / bhw,
+      Math.min(cy, _origSize.h - cy) / bhh
+    );
+    const s = Math.max(100 / Math.min(cw, ch), maxScale);
     const ncw = cw * s, nch = ch * s;
     _currentCropCoords = _constrainCrop({x1: cx - ncw / 2, y1: cy - nch / 2, x2: cx + ncw / 2, y2: cy + nch / 2}, _cropAngle);
     _drawCrop(_currentCropCoords, _cropAngle);
