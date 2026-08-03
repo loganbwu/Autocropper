@@ -621,35 +621,34 @@ body {
   height: 98px;
   background: #0c0c0c;
   border-top: 1px solid #2a2a2a;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   flex-shrink: 0;
   position: relative;
 }
 
-#filmstrip-wrap::-webkit-scrollbar { height: 4px; }
-#filmstrip-wrap::-webkit-scrollbar-track { background: #0c0c0c; }
-#filmstrip-wrap::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
-
 #filmstrip {
-  display: flex;
   height: 100%;
-  gap: 2px;
-  padding: 4px;
-  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #444 #0c0c0c;
 }
 
+#filmstrip::-webkit-scrollbar { height: 4px; }
+#filmstrip::-webkit-scrollbar-track { background: #0c0c0c; }
+#filmstrip::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+
+/* Sized in JS (layoutFilmstripSpacer) to total*cell so the scrollbar has the
+   correct range without needing a real tile in the DOM for every photo. */
+#filmstrip-spacer { position: relative; height: 100%; }
+
 .thumb-item {
-  flex: 0 0 auto;
-  height: 86px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  position: absolute;
+  cursor: pointer;
   border: 2px solid transparent;
   border-radius: 2px;
   background: #1a1a1a;
   overflow: hidden;
-  cursor: pointer;
 }
 
 .thumb-item:hover { border-color: #666; }
@@ -660,17 +659,8 @@ body {
 }
 
 .thumb-item img {
-  height: 82px;
-  width: auto;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   display: block;
-}
-
-.thumb-placeholder {
-  height: 82px;
-  min-width: 55px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  color: #444;
 }

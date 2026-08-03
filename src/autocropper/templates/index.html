@@ -106,7 +106,9 @@
 
 <!-- Filmstrip -->
 <div id="filmstrip-wrap" style="display:none">
-  <div id="filmstrip"></div>
+  <div id="filmstrip">
+    <div id="filmstrip-spacer"></div>
+  </div>
 </div>
 
 <script>
@@ -116,6 +118,7 @@
   let deciding = false;
   let currentPrefetch = 0;  // rebuilt from first state response
   let _es = null;
+  let _sessionVer = 0;      // incremented each time a new folder is loaded; busts thumbnail URL caches
 
   function connectSSE() {
     if (_es) { _es.close(); _es = null; }
@@ -173,6 +176,7 @@
     document.getElementById('btn-pick').disabled = true;
     document.getElementById('picker-sub').textContent = 'Loading...';
     document.getElementById('picker-error').textContent = '';
+    _sessionVer++;
 
     await fetch('/api/start', {
       method: 'POST',
@@ -286,93 +290,195 @@
   }
 
   // ── Filmstrip ──────────────────────────────────────────────
-  // Thumbnails are loaded on demand by an explicit scroll-based check rather
-  // than an IntersectionObserver.  IO fires whenever a thumbnail's width
-  // changes (placeholder → image), causing a cascade that loads every item
-  // sequentially.  A scroll event + debounce only fires on real user scrolls.
+  //
+  // Virtualized recycled-pool approach: a small pool of DOM nodes repositioned
+  // by arithmetic from scrollLeft, rather than one permanent node per photo —
+  // bounded memory regardless of library size. Centering uses native
+  // `scroll-behavior` smooth scroll instead of a hand-rolled animation.
+
+  const FILM_TILE_SIZE = 86;
+  const FILM_GAP = 6;
+  const FILM_BUFFER = 8;           // extra tiles buffered on each side of the viewport
+  const FILM_LOAD_DEBOUNCE = 100;  // ms of no scroll before actually fetching images
 
   let _filmstripBuilt = false;
   let _filmstripReady = false;   // false until the first centreFilmstripOn instant-jump
-  let _thumbLoaded = new Set();
-  let _thumbScrollTimer = null;
+  let _filmTotal = 0;
+  let _filmPool = [];            // [{el, img, idx: number|null, loadedIdx: number|null}]
+  let _filmRafScheduled = false;
+  let _filmLoadTimer = null;
+  let _filmResizeTimer = null;
+
+  function filmCell() {
+    return FILM_TILE_SIZE + FILM_GAP;
+  }
+
+  function layoutFilmstripSpacer() {
+    document.getElementById('filmstrip-spacer').style.width = `${_filmTotal * filmCell()}px`;
+  }
+
+  // Pool big enough to cover the viewport plus a buffer on each side — grown if
+  // a resize fits more tiles, but never shrunk.
+  function ensureFilmPool() {
+    const strip = document.getElementById('filmstrip');
+    const needed = Math.ceil(strip.clientWidth / filmCell()) + 2 * FILM_BUFFER + 1;
+    const spacer = document.getElementById('filmstrip-spacer');
+    const top = Math.max(0, (strip.clientHeight - FILM_TILE_SIZE) / 2);
+
+    while (_filmPool.length < needed) {
+      const el = document.createElement('div');
+      el.className = 'thumb-item';
+      el.style.width = `${FILM_TILE_SIZE}px`;
+      el.style.height = `${FILM_TILE_SIZE}px`;
+      el.style.top = `${top}px`;
+      el.style.display = 'none';
+
+      const img = document.createElement('img');
+      img.alt = '';
+      el.appendChild(img);
+
+      // Read idx from the node's live dataset at click time, not a closure —
+      // pool nodes are reused for different photos, so a captured idx goes stale.
+      el.addEventListener('click', () => {
+        const idx = parseInt(el.dataset.idx, 10);
+        if (isNaN(idx)) return;
+        navigate(idx);
+      });
+
+      spacer.appendChild(el);
+      _filmPool.push({ el, img, idx: null, loadedIdx: null });
+    }
+  }
+
+  function filmVisibleRange() {
+    const strip = document.getElementById('filmstrip');
+    const cell = filmCell();
+    const firstIdx = Math.max(0, Math.floor(strip.scrollLeft / cell) - FILM_BUFFER);
+    const lastIdx = Math.min(_filmTotal - 1, Math.ceil((strip.scrollLeft + strip.clientWidth) / cell) + FILM_BUFFER);
+    return { firstIdx, lastIdx };
+  }
+
+  // Positions/labels every tile in the current window immediately (cheap, no
+  // network) — including the current-photo highlight — so that updates even
+  // when centring doesn't need to move the strip at all.
+  //
+  // Slots keep stable identity across renders: a slot already showing an idx
+  // that's still in range is left completely alone (not blanked, not
+  // re-fetched) — only slots whose idx has scrolled out of range are recycled
+  // for newly-entering photos.
+  function renderFilmWindow() {
+    if (!_filmTotal) return;
+    const { firstIdx, lastIdx } = filmVisibleRange();
+    const cell = filmCell();
+
+    const covered = new Set();
+    const freeSlots = [];
+    for (const entry of _filmPool) {
+      if (entry.idx !== null && entry.idx >= firstIdx && entry.idx <= lastIdx) {
+        covered.add(entry.idx);
+      } else {
+        freeSlots.push(entry);
+      }
+    }
+
+    let freePos = 0;
+    for (let idx = firstIdx; idx <= lastIdx; idx++) {
+      if (covered.has(idx) || freePos >= freeSlots.length) continue;
+      const entry = freeSlots[freePos++];
+      entry.idx = idx;
+      entry.el.dataset.idx = idx;
+      entry.img.removeAttribute('src');   // blank now; loadFilmImages() fills it in
+    }
+
+    for (const entry of _filmPool) {
+      if (entry.idx === null || entry.idx < firstIdx || entry.idx > lastIdx) {
+        entry.el.style.display = 'none';
+        continue;
+      }
+      entry.el.style.display = '';
+      entry.el.style.left = `${entry.idx * cell}px`;
+      entry.el.classList.toggle('current', entry.idx === _fileIdx);
+    }
+  }
+
+  // Actually fetches thumbnails for whatever each pool slot is currently
+  // assigned to — split out from renderFilmWindow() so scroll-driven calls can
+  // debounce this (a fast scroll shouldn't fire a request for every transient
+  // position it passes through on the way to where it settles).
+  function loadFilmImages() {
+    for (const entry of _filmPool) {
+      if (entry.idx === null || entry.loadedIdx === entry.idx) continue;
+      entry.loadedIdx = entry.idx;
+      entry.img.src = `/api/thumbnail/${entry.idx}?v=${_sessionVer}`;
+    }
+  }
+
+  function scheduleFilmImageLoad() {
+    clearTimeout(_filmLoadTimer);
+    _filmLoadTimer = setTimeout(loadFilmImages, FILM_LOAD_DEBOUNCE);
+  }
+
+  function scheduleFilmRender() {
+    if (_filmRafScheduled) return;
+    _filmRafScheduled = true;
+    requestAnimationFrame(() => {
+      _filmRafScheduled = false;
+      renderFilmWindow();
+      scheduleFilmImageLoad();
+    });
+  }
+
+  document.getElementById('filmstrip').addEventListener('scroll', scheduleFilmRender, { passive: true });
+
+  window.addEventListener('resize', () => {
+    clearTimeout(_filmResizeTimer);
+    _filmResizeTimer = setTimeout(() => {
+      ensureFilmPool();
+      renderFilmWindow();
+      scheduleFilmImageLoad();
+    }, 150);
+  });
 
   function buildFilmstrip(total) {
     if (_filmstripBuilt || total <= 0) return;
     _filmstripBuilt = true;
     _filmstripReady = false;
-    const strip = document.getElementById('filmstrip');
-    strip.innerHTML = '';
-    _thumbLoaded.clear();
-    for (let i = 0; i < total; i++) {
-      const item = document.createElement('div');
-      item.className = 'thumb-item';
-      item.dataset.fileIdx = i;
-      item.onclick = () => navigate(i);
-      const ph = document.createElement('div');
-      ph.className = 'thumb-placeholder';
-      ph.textContent = i + 1;
-      item.appendChild(ph);
-      strip.appendChild(item);
-    }
+    _filmTotal = total;
+    layoutFilmstripSpacer();
+    ensureFilmPool();
+    // Reset pool bookkeeping so a fresh session's photos get freshly assigned
+    // (and blanked) rather than momentarily showing a stale image.
+    _filmPool.forEach(entry => {
+      entry.idx = null;
+      entry.loadedIdx = null;
+      entry.el.style.display = 'none';
+    });
+    document.getElementById('filmstrip').scrollLeft = 0;
     document.getElementById('filmstrip-wrap').style.display = '';
   }
 
-  function loadThumb(fileIdx, el) {
-    _thumbLoaded.add(fileIdx);
-    const img = new Image();
-    img.onload = () => {
-      const ph = el.querySelector('.thumb-placeholder');
-      if (ph) el.removeChild(ph);
-      el.appendChild(img);
-    };
-    img.src = `/api/thumbnail/${fileIdx}`;
-  }
-
-  function loadVisibleThumbnails() {
-    const wrap = document.getElementById('filmstrip-wrap');
-    const margin = 300;
-    const wrapRect = wrap.getBoundingClientRect();
-    const left  = wrapRect.left - margin;
-    const right = wrapRect.right + margin;
-    wrap.querySelectorAll('.thumb-item').forEach(el => {
-      const fileIdx = parseInt(el.dataset.fileIdx, 10);
-      if (_thumbLoaded.has(fileIdx)) return;
-      const r = el.getBoundingClientRect();
-      if (r.right >= left && r.left <= right) loadThumb(fileIdx, el);
-    });
-  }
-
-  document.getElementById('filmstrip-wrap').addEventListener('scroll', () => {
-    clearTimeout(_thumbScrollTimer);
-    _thumbScrollTimer = setTimeout(loadVisibleThumbnails, 80);
-  }, { passive: true });
-
-  function updateFilmstripCurrent(fileIdx) {
-    document.querySelectorAll('.thumb-item.current').forEach(el => el.classList.remove('current'));
-    const el = document.querySelector(`.thumb-item[data-file-idx="${fileIdx}"]`);
-    if (el) el.classList.add('current');
-  }
-
   function centreFilmstripOn(fileIdx) {
-    const el = document.querySelector(`.thumb-item[data-file-idx="${fileIdx}"]`);
-    if (!el) return;
-    const wrap = document.getElementById('filmstrip-wrap');
-    const offset = el.offsetLeft - wrap.clientWidth / 2 + el.offsetWidth / 2;
-    if (_filmstripReady) {
-      wrap.scrollTo({ left: offset, behavior: 'smooth' });
-    } else {
-      wrap.scrollLeft = offset;   // instant — no animation sweep triggering loads
-      _filmstripReady = true;
-      loadVisibleThumbnails();
-    }
+    const strip = document.getElementById('filmstrip');
+    const target = Math.max(0, fileIdx * filmCell() + FILM_TILE_SIZE / 2 - strip.clientWidth / 2);
+    // Native smooth-scroll duration scales with distance, not a fixed time
+    // budget — fine for a single-step arrow-key nudge, but a jump clear across
+    // a large library (e.g. clicking a thumbnail far away) would otherwise
+    // glide for multiple seconds. Snap instantly once the jump is more than a
+    // screenful away; only nearby moves animate.
+    const bigJump = !_filmstripReady || Math.abs(target - strip.scrollLeft) > strip.clientWidth;
+    strip.scrollTo({ left: target, behavior: bigJump ? 'instant' : 'smooth' });
+    _filmstripReady = true;
+    // Not debounced: a navigation step is a single deliberate photo change, not
+    // a continuous scroll gesture — the debounce exists for the scroll-event
+    // path so a fast manual drag of the strip doesn't fire a burst of fetches
+    // for positions already scrolled past.
+    renderFilmWindow();
+    loadFilmImages();
   }
 
   function resetFilmstrip() {
     _filmstripBuilt = false;
     _filmstripReady = false;
-    _thumbLoaded.clear();
-    clearTimeout(_thumbScrollTimer);
-    document.getElementById('filmstrip').innerHTML = '';
     document.getElementById('filmstrip-wrap').style.display = 'none';
   }
 
@@ -532,10 +638,7 @@
     document.getElementById('crop-hint-text').textContent = data.ml_crop ? 'Apply ML crop' : 'Apply margin crop';
     syncMlUi(data);
     if (data.total_files) buildFilmstrip(data.total_files);
-    if (data.file_idx !== undefined) {
-      updateFilmstripCurrent(data.file_idx);
-      centreFilmstripOn(data.file_idx);
-    }
+    if (data.file_idx !== undefined) centreFilmstripOn(data.file_idx);
     uiReady = true;
     deciding = false;
   }
