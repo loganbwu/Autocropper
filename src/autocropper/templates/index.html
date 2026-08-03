@@ -653,21 +653,31 @@
     overlay.style.display = '';
   }
 
+  let _showImageSeq = 0;
+
   async function showImage(data) {
+    const seq = ++_showImageSeq;
     _currentFilename = data.filename;
     _fileIdx = data.file_idx ?? null;
     _totalFiles = data.total_files || 0;
     const origSrc = 'data:image/jpeg;base64,' + data.orig_b64;
 
-    await new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        _cropImage = img;
-        _origSize = {w: img.naturalWidth, h: img.naturalHeight};
-        resolve();
-      };
-      img.src = origSrc;
+    const img = await new Promise((resolve) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.src = origSrc;
     });
+
+    // Decoding is async, so a later call for a newer photo can resolve before
+    // this one — e.g. holding an arrow key fires navigate() faster than each
+    // SSE round-trip + decode settles. _fileIdx/_currentFilename above already
+    // reflect whichever photo was requested most recently; if that's not us
+    // any more, applying our now-stale data would clobber it (wrong main
+    // image, wrong filmstrip highlight) with an old photo, so bail out.
+    if (seq !== _showImageSeq) return;
+
+    _cropImage = img;
+    _origSize = {w: img.naturalWidth, h: img.naturalHeight};
 
     if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
     _dragState = null;
