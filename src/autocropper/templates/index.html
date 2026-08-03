@@ -81,7 +81,7 @@
       <tr><td class="key-cell"><span class="key-badge">I</span></td><td>Toggle 4:5 Instagram portrait guide</td></tr>
       <tr><td class="key-cell"><span class="key-badge">4</span></td><td>Toggle crop to 4:5 portrait / revert</td></tr>
       <tr><td class="key-cell"><span class="key-badge">F</span></td><td>Toggle fullscreen</td></tr>
-      <tr><td class="key-cell"><span class="key-badge">Space</span></td><td>Zoom out to maximum, keeping centre</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">Space</span></td><td>Zoom out to maximum, keeping centre; press again (untouched) to reset to as-shot</td></tr>
       <tr><td class="key-cell"><span class="key-badge">?</span></td><td>Toggle this help</td></tr>
       <tr><td class="key-cell"><span class="key-badge">Esc</span></td><td>Close this help</td></tr>
       <tr><td class="key-cell">Scroll / Pinch</td><td>Zoom in / out on the crop</td></tr>
@@ -508,6 +508,8 @@
   let _default45 = false;  // if on, new photos load already forced to 4:5
   let _is45Forced = false; // whether the current crop is a forced 4:5 crop
   let _preForceCrop = null; // {coords, angle} to revert to when un-forcing
+  let _asShotCrop = null;   // as-loaded crop for the current photo, for the Space-Space reset
+  let _spaceMaxCrop = null; // coords set by the last spacebar press, to detect an untouched repeat press
 
   function _drawCrop(coords, angle) {
     if (!_cropImage || !_cropCtx) return;
@@ -690,6 +692,8 @@
     document.getElementById('img-orig').src = origSrc;
     requestAnimationFrame(_updateGridOrigOverlay);
     _currentCropCoords = data.crop_coords;
+    _asShotCrop = {...data.crop_coords};
+    _spaceMaxCrop = null;
     _is45Forced = false;
     _preForceCrop = null;
     if (_default45) {
@@ -892,7 +896,7 @@
     }
     if (e.key === ' ') {
       if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
-      _zoomOutMaxKeepCentre();
+      _spacebarZoom();
       e.preventDefault(); return;
     }
     if (e.key === '1') decide('skip');
@@ -986,11 +990,14 @@
     if (!uiReady || !_currentCropCoords || !_origSize) return;
     e.preventDefault();
 
-    if (e.ctrlKey || e.altKey) {
-      // Pinch gesture, or Option/Alt held while scrolling → zoom;
-      // compound-multiply so each event scales on the last
+    if (e.ctrlKey) {
+      // Pinch gesture → zoom; compound-multiply so each event scales on the last
       if (!_pendingGesture || _pendingGesture.type !== 'zoom') _pendingGesture = { type: 'zoom', factor: 1 };
       _pendingGesture.factor *= (1 + e.deltaY * 0.003);
+    } else if (e.altKey) {
+      // Option/Alt held while scrolling → zoom, reversed from the pinch direction
+      if (!_pendingGesture || _pendingGesture.type !== 'zoom') _pendingGesture = { type: 'zoom', factor: 1 };
+      _pendingGesture.factor *= (1 - e.deltaY * 0.003);
     } else if (e.deltaMode === 1) {
       // Mouse wheel (line mode) → zoom
       if (!_pendingGesture || _pendingGesture.type !== 'zoom') _pendingGesture = { type: 'zoom', factor: 1 };
@@ -1068,6 +1075,28 @@
     const ncw = cw * s, nch = ch * s;
     _currentCropCoords = _constrainCrop({x1: cx - ncw / 2, y1: cy - nch / 2, x2: cx + ncw / 2, y2: cy + nch / 2}, _cropAngle);
     _drawCrop(_currentCropCoords, _cropAngle);
+  }
+
+  function _cropsEqual(a, b) {
+    return !!a && !!b && a.x1 === b.x1 && a.y1 === b.y1 && a.x2 === b.x2 && a.y2 === b.y2;
+  }
+
+  // Spacebar action: zooms out to the maximum size that keeps the current
+  // centre. If the crop is already exactly the result of the previous press
+  // (i.e. nothing was panned/zoomed/rotated since), pressing again instead
+  // resets the crop to the as-shot crop this photo was loaded with.
+  function _spacebarZoom() {
+    if (!_currentCropCoords || !_origSize) return;
+    if (_cropAngle === 0 && _asShotCrop && _cropsEqual(_currentCropCoords, _spaceMaxCrop)) {
+      _is45Forced = false;
+      _preForceCrop = null;
+      _spaceMaxCrop = null;
+      _cropAngle = 0;
+      _applyCrop(_constrainCrop({..._asShotCrop}, 0));
+      return;
+    }
+    _zoomOutMaxKeepCentre();
+    _spaceMaxCrop = {..._currentCropCoords};
   }
 
   // ── Fullscreen ─────────────────────────────────────────────
