@@ -85,6 +85,7 @@
       <tr><td class="key-cell"><span class="key-badge">?</span></td><td>Toggle this help</td></tr>
       <tr><td class="key-cell"><span class="key-badge">Esc</span></td><td>Close this help</td></tr>
       <tr><td class="key-cell">Scroll / Pinch</td><td>Zoom in / out on the crop</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">Option</span> + Scroll</td><td>Zoom in / out on the crop</td></tr>
       <tr><td class="key-cell">Drag / Two-finger scroll</td><td>Pan the crop</td></tr>
       <tr><td class="key-cell">Click thumbnail</td><td>Jump to that photo</td></tr>
     </table>
@@ -449,6 +450,12 @@
     _filmstripBuilt = true;
     _filmstripReady = false;
     _filmTotal = total;
+    // Reveal the wrap *before* sizing the pool — ensureFilmPool() reads
+    // strip.clientWidth/clientHeight, which are both 0 while the wrap is
+    // still `display:none`, so measuring first would undersize the pool to
+    // its bare minimum (2*FILM_BUFFER+1) regardless of the real viewport
+    // width, leaving most of a normal-width strip with no tile at all.
+    document.getElementById('filmstrip-wrap').style.display = '';
     layoutFilmstripSpacer();
     ensureFilmPool();
     // Reset pool bookkeeping so a fresh session's photos get freshly assigned
@@ -459,7 +466,6 @@
       entry.el.style.display = 'none';
     });
     document.getElementById('filmstrip').scrollLeft = 0;
-    document.getElementById('filmstrip-wrap').style.display = '';
   }
 
   function centreFilmstripOn(fileIdx) {
@@ -970,8 +976,9 @@
     if (!uiReady || !_currentCropCoords || !_origSize) return;
     e.preventDefault();
 
-    if (e.ctrlKey) {
-      // Pinch gesture → zoom; compound-multiply so each event scales on the last
+    if (e.ctrlKey || e.altKey) {
+      // Pinch gesture, or Option/Alt held while scrolling → zoom;
+      // compound-multiply so each event scales on the last
       if (!_pendingGesture || _pendingGesture.type !== 'zoom') _pendingGesture = { type: 'zoom', factor: 1 };
       _pendingGesture.factor *= (1 + e.deltaY * 0.003);
     } else if (e.deltaMode === 1) {
