@@ -702,8 +702,12 @@
       _drawCrop(data.crop_coords, 0);
     }
     document.getElementById('filename').textContent = data.filename;
-    document.getElementById('progress').textContent = `${data.idx} / ${data.total}`;
-    const pct = data.total > 0 ? ((data.idx - 1) / data.total * 100) : 0;
+    // Position within the whole folder (matches the filmstrip), not within the
+    // still-to-review subset — data.idx/data.total count review decisions made,
+    // which no longer matches "where am I" now that the filmstrip spans every
+    // photo including ones already decided in a prior session.
+    document.getElementById('progress').textContent = `${data.file_idx + 1} / ${data.total_files}`;
+    const pct = data.total_files > 0 ? (data.file_idx / data.total_files * 100) : 0;
     document.getElementById('progress-bar').style.width = pct + '%';
     document.getElementById('panel-orig').classList.remove('selected');
     document.getElementById('panel-crop').classList.remove('selected');
