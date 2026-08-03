@@ -122,7 +122,6 @@ class ReviewState:
         self.skip_noop = skip_noop           # if True, auto-decline no-op crops
         self.skip_no_person = skip_no_person # if True, auto-decline when no person detected
         self.skipped = pre_skipped           # combined: pre + no_person + noop
-        self.producer_processed = 0
         self.margin = MARGIN_DEFAULT
         self.status = "loading"
         self.current = None
@@ -130,8 +129,6 @@ class ReviewState:
         # ML mode state
         self.ml_mode = ml_mode
         self.ml_dataset = ml_dataset   # TrainingDataset | None
-
-        self.total_eligible = len(files)
 
         # Only processed results enter the queue (skips handled inline by producer).
         # Unbounded queue; backpressure is handled via _prefetch_cv so the limit
@@ -175,14 +172,12 @@ class ReviewState:
                     with self._lock:
                         self.skipped += 1
                         self.no_person_skipped += 1
-                        self.producer_processed += 1
                     _notify_sse()
                     continue
 
                 is_noop = result is not None and result.get("noop")
                 is_no_person = result is not None and result.get("no_person")
                 with self._lock:
-                    self.producer_processed += 1
                     if is_noop and self.skip_noop:
                         self.skipped += 1
                         self.noop_skipped += 1
@@ -390,10 +385,6 @@ class ReviewState:
 
     def get_state(self):
         with self._lock:
-            done_count = self.accepted + self.rejected
-            auto_skipped = self.no_person_skipped + self.noop_skipped
-            # Include auto-skips in progress so the bar reflects true processing progress.
-            reviewed_count = done_count + auto_skipped
             if self.status == "done":
                 return {
                     "status": "done",
@@ -410,9 +401,6 @@ class ReviewState:
             if self.status == "loading" or self.current is None:
                 return {
                     "status": "loading",
-                    "idx": reviewed_count,
-                    "producer_idx": self.producer_processed,
-                    "total": self.total_eligible,
                     "total_files": len(self.all_files),
                     "buffered": buffered,
                     "buffer_types": buffer_types,
@@ -424,8 +412,6 @@ class ReviewState:
             state = {
                 "status": "ready",
                 "filename": d["cr3_path"].name,
-                "idx": reviewed_count + 1,
-                "total": self.total_eligible,
                 "total_files": len(self.all_files),
                 "file_idx": d.get("file_idx", 0),
                 "buffered": buffered,
@@ -723,7 +709,6 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                     state.skipped = state.pre_skipped
                     state.no_person_skipped = 0
                     state.noop_skipped = 0
-                    state.producer_processed = len(state._decided_paths)
 
             if old_mode != enabled:
                 # If an image was on screen, unblock the consumer so it stops waiting

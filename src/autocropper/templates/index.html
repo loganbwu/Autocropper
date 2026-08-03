@@ -283,11 +283,10 @@
     const overlay = document.getElementById('overlay');
     overlay.classList.remove('hidden');
     document.getElementById('overlay-title').textContent = 'Processing...';
-    const analysed = Math.min((data.producer_idx != null ? data.producer_idx : data.idx) + 1, data.total);
-    const sub = data.total > 0
-      ? `Analysing ${analysed} of ${data.total}`
-      : 'Analysing images';
-    document.getElementById('overlay-sub').textContent = sub;
+    // No "X of Y" count here: the consumer only ever blocks on one photo at a
+    // time (it shows the next queued result as soon as it exists), so there's
+    // no meaningful bulk position to report — just that one is in flight.
+    document.getElementById('overlay-sub').textContent = '';
     overlay.querySelector('.spinner').style.display = '';
     updateBuffer(data.buffered || 0, data.prefetch);
     if (data.total_files) buildFilmstrip(data.total_files);
@@ -702,10 +701,7 @@
       _drawCrop(data.crop_coords, 0);
     }
     document.getElementById('filename').textContent = data.filename;
-    // Position within the whole folder (matches the filmstrip), not within the
-    // still-to-review subset — data.idx/data.total count review decisions made,
-    // which no longer matches "where am I" now that the filmstrip spans every
-    // photo including ones already decided in a prior session.
+    // Position within the whole folder, matching the filmstrip.
     document.getElementById('progress').textContent = `${data.file_idx + 1} / ${data.total_files}`;
     const pct = data.total_files > 0 ? (data.file_idx / data.total_files * 100) : 0;
     document.getElementById('progress-bar').style.width = pct + '%';
