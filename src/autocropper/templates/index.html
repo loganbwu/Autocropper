@@ -42,6 +42,10 @@
       <button id="ig-toggle" title="Toggle 4:5 Instagram portrait crop (I)" onclick="toggleIg()"></button>
       <label id="ig-label" for="ig-toggle" onclick="toggleIg()">4:5</label>
     </div>
+    <div id="default45-control">
+      <button id="default45-toggle" title="Make 4:5 the default crop for new photos" onclick="toggleDefault45()"></button>
+      <label id="default45-label" for="default45-toggle" onclick="toggleDefault45()">Default 4:5</label>
+    </div>
     <div id="ml-control">
       <label id="ml-file-label" for="ml-file" title="Upload training dataset (.pkl)">dataset</label>
       <input id="ml-file" type="file" accept=".pkl" onchange="uploadDataset(this)">
@@ -75,6 +79,7 @@
       <tr><td class="key-cell"><span class="key-badge">&larr;</span> <span class="key-badge">&rarr;</span></td><td>Navigate to previous / next photo</td></tr>
       <tr><td class="key-cell"><span class="key-badge">G</span></td><td>Toggle rule-of-thirds grid</td></tr>
       <tr><td class="key-cell"><span class="key-badge">I</span></td><td>Toggle 4:5 Instagram portrait guide</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">4</span></td><td>Toggle crop to 4:5 portrait / revert</td></tr>
       <tr><td class="key-cell"><span class="key-badge">F</span></td><td>Toggle fullscreen</td></tr>
       <tr><td class="key-cell"><span class="key-badge">Space</span></td><td>Zoom out to maximum, keeping centre</td></tr>
       <tr><td class="key-cell"><span class="key-badge">?</span></td><td>Toggle this help</td></tr>
@@ -494,6 +499,9 @@
   let _rafId = null;       // pending requestAnimationFrame for drag/scroll
   let _showGrid = false;
   let _showIg = false;
+  let _default45 = false;  // if on, new photos load already forced to 4:5
+  let _is45Forced = false; // whether the current crop is a forced 4:5 crop
+  let _preForceCrop = null; // {coords, angle} to revert to when un-forcing
 
   function _drawCrop(coords, angle) {
     if (!_cropImage || !_cropCtx) return;
@@ -584,6 +592,48 @@
     if (_currentCropCoords) _drawCrop(_currentCropCoords, _cropAngle);
   }
 
+  // Toggles the current crop between forced 4:5 portrait and whatever it was
+  // before. Forcing replaces the current crop with the largest 4:5 portrait
+  // rectangle that fits centred within it (same fit math as the `I` guide
+  // preview), so the photo can be forced to Instagram portrait regardless of
+  // its original aspect ratio. Subsequent pan/zoom preserve the ratio since
+  // both scale the box uniformly. Pressing again restores the crop (coords
+  // and angle) captured just before it was forced.
+  function forceAspect45() {
+    if (!_currentCropCoords || !_origSize) return;
+
+    if (_is45Forced) {
+      const prev = _preForceCrop;
+      _is45Forced = false;
+      _preForceCrop = null;
+      if (prev) {
+        _cropAngle = prev.angle;
+        _applyCrop(_constrainCrop(prev.coords, _cropAngle));
+      }
+      return;
+    }
+
+    const {x1, y1, x2, y2} = _currentCropCoords;
+    const cw = x2 - x1, ch = y2 - y1;
+    const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+    const ratio = 4 / 5;
+    let nw, nh;
+    if (cw / ch > ratio) {
+      nh = ch; nw = ch * ratio;
+    } else {
+      nw = cw; nh = Math.min(cw / ratio, ch);
+    }
+    const coords = { x1: cx - nw / 2, y1: cy - nh / 2, x2: cx + nw / 2, y2: cy + nh / 2 };
+    _preForceCrop = { coords: {...(_currentCropCoords)}, angle: _cropAngle };
+    _is45Forced = true;
+    _applyCrop(_constrainCrop(coords, _cropAngle));
+  }
+
+  function toggleDefault45() {
+    _default45 = !_default45;
+    document.getElementById('default45-toggle').classList.toggle('on', _default45);
+  }
+
   function _updateGridOrigOverlay() {
     const overlay = document.getElementById('grid-overlay-orig');
     if (!_showGrid || !_currentFilename) { overlay.style.display = 'none'; return; }
@@ -624,7 +674,13 @@
     document.getElementById('img-orig').src = origSrc;
     requestAnimationFrame(_updateGridOrigOverlay);
     _currentCropCoords = data.crop_coords;
-    _drawCrop(data.crop_coords, 0);
+    _is45Forced = false;
+    _preForceCrop = null;
+    if (_default45) {
+      forceAspect45();
+    } else {
+      _drawCrop(data.crop_coords, 0);
+    }
     document.getElementById('filename').textContent = data.filename;
     document.getElementById('progress').textContent = `${data.idx} / ${data.total}`;
     const pct = data.total > 0 ? ((data.idx - 1) / data.total * 100) : 0;
@@ -827,6 +883,7 @@
     if (e.key === '2') decide('crop');
     if (e.key === 'g' || e.key === 'G') toggleGrid();
     if (e.key === 'i' || e.key === 'I') toggleIg();
+    if (e.key === '4') forceAspect45();
   });
 
   window.addEventListener('resize', _updateGridOrigOverlay);

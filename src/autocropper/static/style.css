@@ -583,6 +583,47 @@ body {
 #ig-toggle.on { background: var(--pale-blue); }
 #ig-toggle.on::after { left: 17px; background: var(--white); }
 
+/* ── Default 4:5 crop toggle ── */
+
+#default45-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Oswald', sans-serif;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--grey);
+}
+
+#default45-label { cursor: pointer; user-select: none; }
+
+#default45-toggle {
+  width: 32px;
+  height: 17px;
+  border-radius: 9px;
+  background: #444;
+  position: relative;
+  cursor: pointer;
+  border: none;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+#default45-toggle::after {
+  content: '';
+  position: absolute;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #bbb;
+  top: 2px;
+  left: 2px;
+  transition: left 0.2s, background 0.2s;
+}
+
+#default45-toggle.on { background: var(--pale-blue); }
+#default45-toggle.on::after { left: 17px; background: var(--white); }
+
 /* Rule-of-thirds overlay for the original image panel */
 #grid-overlay-orig {
   position: absolute;
