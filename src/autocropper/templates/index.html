@@ -81,7 +81,7 @@
       <tr><td class="key-cell"><span class="key-badge">I</span></td><td>Toggle 4:5 Instagram portrait guide</td></tr>
       <tr><td class="key-cell"><span class="key-badge">4</span></td><td>Toggle crop to 4:5 portrait / revert</td></tr>
       <tr><td class="key-cell"><span class="key-badge">F</span></td><td>Toggle fullscreen</td></tr>
-      <tr><td class="key-cell"><span class="key-badge">Space</span></td><td>Zoom out to maximum, keeping centre</td></tr>
+      <tr><td class="key-cell"><span class="key-badge">Space</span></td><td>Zoom out to maximum size</td></tr>
       <tr><td class="key-cell"><span class="key-badge">?</span></td><td>Toggle this help</td></tr>
       <tr><td class="key-cell"><span class="key-badge">Esc</span></td><td>Close this help</td></tr>
       <tr><td class="key-cell">Scroll / Pinch</td><td>Zoom in / out on the crop</td></tr>
@@ -1006,8 +1006,13 @@
 
   // Scales the crop box around its current centre by `factor` (>1 zooms out,
   // <1 zooms in), clamped to the min zoom-in size and the max zoom-out size
-  // that still fits within the image at the box's *current* centre — pass
-  // Infinity to jump straight to that maximum (spacebar shortcut).
+  // that fits within the image at all (i.e. box size <= image size) — pass
+  // Infinity to jump straight to that maximum (spacebar shortcut). Unlike an
+  // earlier version, this cap ignores how close the *current* centre is to
+  // an edge: growing the box no longer freezes there. Instead `_constrainCrop`
+  // (below) slides the centre back toward the middle just enough to fit the
+  // larger box, symmetric to how `_panWithAutoZoom` shrinks the box rather
+  // than freezing a pan at the edge.
   function _zoomByFactor(factor) {
     if (!_currentCropCoords || !_origSize) return;
     const {x1, y1, x2, y2} = _currentCropCoords;
@@ -1017,11 +1022,8 @@
     const sinA = Math.abs(Math.sin(_cropAngle * Math.PI / 180));
     const bhw = (cw / 2) * cosA + (ch / 2) * sinA;
     const bhh = (cw / 2) * sinA + (ch / 2) * cosA;
-    const maxScale = Math.min(
-      Math.min(cx, _origSize.w - cx) / bhw,
-      Math.min(cy, _origSize.h - cy) / bhh
-    );
-    const s = Math.max(100 / Math.min(cw, ch), Math.min(maxScale, factor));
+    const imageMaxScale = Math.min(_origSize.w / (2 * bhw), _origSize.h / (2 * bhh));
+    const s = Math.max(100 / Math.min(cw, ch), Math.min(imageMaxScale, factor));
     const ncw = cw * s, nch = ch * s;
     _currentCropCoords = _constrainCrop({x1: cx - ncw / 2, y1: cy - nch / 2, x2: cx + ncw / 2, y2: cy + nch / 2}, _cropAngle);
     _drawCrop(_currentCropCoords, _cropAngle);
