@@ -995,9 +995,9 @@
       if (!_pendingGesture || _pendingGesture.type !== 'zoom') _pendingGesture = { type: 'zoom', factor: 1 };
       _pendingGesture.factor *= (1 + e.deltaY * 0.003);
     } else if (e.altKey) {
-      // Option/Alt held while scrolling → zoom, reversed from the pinch direction
+      // Option/Alt held while scrolling → zoom, same direction as the pinch gesture
       if (!_pendingGesture || _pendingGesture.type !== 'zoom') _pendingGesture = { type: 'zoom', factor: 1 };
-      _pendingGesture.factor *= (1 - e.deltaY * 0.003);
+      _pendingGesture.factor *= (1 + e.deltaY * 0.003);
     } else if (e.deltaMode === 1) {
       // Mouse wheel (line mode) → zoom
       if (!_pendingGesture || _pendingGesture.type !== 'zoom') _pendingGesture = { type: 'zoom', factor: 1 };
