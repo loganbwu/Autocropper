@@ -178,7 +178,7 @@ def merged_envelope(boxes, hulls):
             xs.extend(pts[:, 0])
             ys.extend(pts[:, 1])
 
-    return min(xs), min(ys), max(xs), max(ys)
+    return float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))
 
 
 def expand_with_margin(x1, y1, x2, y2, w, h, margin_ratio=MARGIN_RATIO):
@@ -339,6 +339,22 @@ def has_been_reviewed(cr3_path: Path):
         return bool(re.search(r'crs:HasCrop[=>"\s]*(True|False|true|false|1|0)', content))
     except Exception:
         return False
+
+
+def read_xmp_capture_time(cr3_path: Path) -> str:
+    """Return capture time from the XMP sidecar as 'YYYY-MM-DD HH:MM:SS', or '' if unavailable."""
+    xmp_path = cr3_path.with_suffix("").with_suffix(".xmp")
+    if not xmp_path.exists():
+        return ""
+    try:
+        content = xmp_path.read_text()
+    except Exception:
+        return ""
+    m = (re.search(r'<exif:DateTimeOriginal>\s*([^<]*?)\s*</exif:DateTimeOriginal>', content)
+         or re.search(r'exif:DateTimeOriginal\s*=\s*"([^"]*)"', content))
+    if not m:
+        return ""
+    return m.group(1).strip().replace("T", " ")[:19]
 
 
 def _inject_description_attrs(content: str, attrs_str: str) -> str:
@@ -777,11 +793,23 @@ def apply_orientation(img: Image.Image, orientation: int) -> Image.Image:
     return img.transpose(op) if op else img
 
 
+def _capture_time_for_sort(cr3_path: Path) -> str:
+    """Capture time for ordering: XMP sidecar first (fast), embedded EXIF as fallback.
+
+    Both formats are zero-padded and sort correctly as strings; XMP's ISO
+    dashes are normalized to colons to match the embedded EXIF format.
+    """
+    xmp_time = read_xmp_capture_time(cr3_path)
+    if xmp_time:
+        return xmp_time.replace("-", ":")
+    return get_capture_time(cr3_path)
+
+
 def find_cr3_files(root: Path):
     files = [p for p in root.rglob("*") if p.suffix.lower() == ".cr3"]
     workers = min(8, len(files)) if files else 1
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        times = list(pool.map(get_capture_time, files))
+        times = list(pool.map(_capture_time_for_sort, files))
     return [f for _, f in sorted(zip(times, files), key=lambda x: (x[0], x[1].name))]
 
 

@@ -9,6 +9,7 @@ import sys
 import threading
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 
 # ANSI colour helpers — disabled automatically when output is not a terminal.
@@ -21,6 +22,7 @@ _DIM    = "\033[2m"  if _C else ""
 _RESET  = "\033[0m"  if _C else ""
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+from flask.json.provider import DefaultJSONProvider
 
 from .main import (
     compute_crop,
@@ -28,6 +30,7 @@ from .main import (
     has_existing_crop,
     load_ml_models,
     load_models,
+    read_xmp_capture_time,
     recompute_crop,
     write_decline_marker,
     write_xmp,
@@ -44,6 +47,17 @@ MARGIN_MAX = 0.50
 
 # SSE: woken whenever any server-side state changes that the browser should see.
 _sse_condition = threading.Condition()
+
+
+def _json_default(obj):
+    """Unwrap numpy scalars (float32/int64/etc.) that leak out of the ML pipeline."""
+    if hasattr(obj, "item"):
+        return obj.item()
+    return DefaultJSONProvider.default(obj)
+
+
+class _NumpyJSONProvider(DefaultJSONProvider):
+    default = staticmethod(_json_default)
 
 
 def _notify_sse():
@@ -456,6 +470,7 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                ml_dataset_path: str = "", skip_noop: bool = False,
                skip_no_person: bool = False) -> Flask:
     app = Flask(__name__)
+    app.json = _NumpyJSONProvider(app)
     app.config["review_state"] = None
     app.config["start_stage"] = None     # str while starting, None otherwise
     app.config["start_progress"] = None  # float 0-1 during linear stages, None otherwise
@@ -523,20 +538,35 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 app.config["start_stage"] = f"Scanning {n} files..."
                 _notify_sse()
 
-                # Use mtime for ordering (instant stat, no 12 MB header reads).
-                # has_been_reviewed reads a small XMP sidecar — keep in parallel.
+                # Order by XMP capture time when available (small sidecar read, no
+                # 12 MB CR3 header reads); fall back to mtime for files without one.
+                # has_been_reviewed also reads the XMP sidecar — keep both in parallel.
                 reviewed_set = set()
+                sort_keys = {}
+
+                def _scan(f):
+                    reviewed = has_been_reviewed(f)
+                    xmp_time = read_xmp_capture_time(f)
+                    if xmp_time:
+                        try:
+                            epoch = datetime.strptime(xmp_time, "%Y-%m-%d %H:%M:%S").timestamp()
+                            return reviewed, (epoch, f.name)
+                        except ValueError:
+                            pass
+                    return reviewed, (f.stat().st_mtime, f.name)
+
                 with ThreadPoolExecutor(max_workers=min(8, n)) as pool:
-                    futures = {pool.submit(has_been_reviewed, f): f for f in files}
+                    futures = {pool.submit(_scan, f): f for f in files}
                     for future in as_completed(futures):
                         f = futures[future]
                         try:
-                            if future.result():
+                            reviewed, sort_keys[f] = future.result()
+                            if reviewed:
                                 reviewed_set.add(f)
                         except Exception:
-                            pass
+                            sort_keys[f] = (f.stat().st_mtime, f.name)
 
-                cr3_files = sorted(files, key=lambda f: (f.stat().st_mtime, f.name))
+                cr3_files = sorted(files, key=lambda f: sort_keys[f])
 
                 force = app.config["force"]
                 already_reviewed = [f for f in cr3_files if not force and f in reviewed_set]
@@ -753,11 +783,11 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
             return {**state.get_state(), **_ml_info()}
 
         def generate():
-            yield f"data: {json.dumps(get_snapshot())}\n\n"
+            yield f"data: {json.dumps(get_snapshot(), default=_json_default)}\n\n"
             while True:
                 with _sse_condition:
                     _sse_condition.wait(timeout=25)
-                yield f"data: {json.dumps(get_snapshot())}\n\n"
+                yield f"data: {json.dumps(get_snapshot(), default=_json_default)}\n\n"
 
         return Response(
             stream_with_context(generate()),
