@@ -35,7 +35,9 @@ def _minimal_state(files):
     """Return a ReviewState with __init__ bypassed — only thumbnail-related attrs set."""
     state = object.__new__(ReviewState)
     state.files = list(files)
+    state.all_files = state.files
     state._file_index = {f: i for i, f in enumerate(state.files)}
+    state._all_index = state._file_index
     state._thumb_cache = {}
     state._lock = threading.Lock()
     state._prefetch_q = queue.Queue()
@@ -315,3 +317,138 @@ def test_file_index_lookup_for_remaining_subset():
     # Simulate looking up the third file in a remaining-subset scenario
     assert state._file_index.get(files[2]) == 2
     assert state._file_index.get(files[4]) == 4
+
+
+# ── Manual fallback when the next auto-crop isn't ready ──────────────────────
+
+class _GatedCrop:
+    """Fake compute_crop: each photo blocks until its gate is released, so a
+    test controls exactly which auto-crops are 'ready'."""
+
+    def __init__(self):
+        self.gates = {}
+        self.started = []
+
+    def gate(self, cr3):
+        return self.gates.setdefault(cr3, threading.Event())
+
+    def __call__(self, models, cr3, all_people, margin_ratio=0.2):
+        self.started.append(cr3)
+        assert self.gate(cr3).wait(5)
+        return {
+            "cr3_path": cr3,
+            "x1": 10, "y1": 10, "x2": 90, "y2": 90, "w": 100, "h": 100,
+            "raw_x1": 30, "raw_y1": 30, "raw_x2": 70, "raw_y2": 70, "person_cx": 50,
+            "orig_bytes": b"jpeg", "noop": False,
+        }
+
+
+def _wait_for(pred, timeout=5):
+    deadline = threading.Event()
+    for _ in range(int(timeout / 0.01)):
+        if pred():
+            return True
+        deadline.wait(0.01)
+    return False
+
+
+@contextmanager
+def _review_session(n=3):
+    files = [Path(f"/fake/{i}.cr3") for i in range(n)]
+    fake = _GatedCrop()
+    xmp = MagicMock()
+    with patch("autocropper.web.compute_crop", fake), \
+         patch("autocropper.web.recompute_crop"), \
+         patch("autocropper.web.extract_preview_image", return_value=_make_rgb_image(120, 80)), \
+         patch("autocropper.web.get_orientation", return_value=1), \
+         patch("autocropper.web.apply_orientation", side_effect=lambda img, ori: img), \
+         patch("autocropper.web.write_xmp", xmp), \
+         patch("autocropper.web.write_decline_marker"):
+        state = ReviewState(files, models=None)
+        yield state, files, fake, xmp
+        for g in fake.gates.values():
+            g.set()  # let the producer thread finish
+
+
+def _current_path(state):
+    with state._lock:
+        return state.current["cr3_path"] if state.current else None
+
+
+def test_first_photo_waits_for_auto_crop():
+    """Before the user has moved on, the consumer waits rather than going manual."""
+    with _review_session() as (state, files, fake, _):
+        assert _wait_for(lambda: files[0] in fake.started)
+        threading.Event().wait(0.3)
+        assert state.get_state()["status"] == "loading"
+        fake.gate(files[0]).set()
+        assert _wait_for(lambda: _current_path(state) == files[0])
+        assert not state.current.get("manual")
+
+
+def test_unready_next_photo_shown_manually_and_auto_result_discarded():
+    with _review_session() as (state, files, fake, _):
+        fake.gate(files[0]).set()
+        assert _wait_for(lambda: _current_path(state) == files[0])
+        assert _wait_for(lambda: files[1] in fake.started)
+
+        state.decide("skip")  # photo 1's auto-crop is still running
+        assert _wait_for(lambda: _current_path(state) == files[1])
+        s = state.get_state()
+        assert s["manual"] is True
+        assert s["crop_coords"] == {"x1": 0, "y1": 0, "x2": 120, "y2": 80}
+        assert s["file_idx"] == 1
+
+        # The in-flight auto-crop for photo 1 finishes: discarded, not queued.
+        fake.gate(files[1]).set()
+        assert _wait_for(lambda: files[2] in fake.started)
+        assert all(item["cr3_path"] != files[1] for item in list(state._prefetch_q.queue) if item)
+
+        # Photo 2's auto-crop arrives normally once the manual one is decided.
+        fake.gate(files[2]).set()
+        assert _wait_for(lambda: state._prefetch_q.qsize() >= 1)
+        state.decide("skip")
+        assert _wait_for(lambda: _current_path(state) == files[2])
+        assert not state.current.get("manual")
+
+
+def test_claimed_photo_not_yet_started_is_never_auto_cropped():
+    with _review_session(n=4) as (state, files, fake, _):
+        fake.gate(files[0]).set()
+        assert _wait_for(lambda: _current_path(state) == files[0])
+        state.decide("skip")                     # photo 1 claimed (in flight)
+        assert _wait_for(lambda: _current_path(state) == files[1])
+        state.decide("skip")                     # photo 2 claimed (not started)
+        assert _wait_for(lambda: _current_path(state) == files[2])
+        assert state.current.get("manual")
+
+        fake.gate(files[1]).set()
+        fake.gate(files[3]).set()
+        assert _wait_for(lambda: files[3] in fake.started)
+        assert files[2] not in fake.started
+
+
+def test_manual_crop_writes_manual_keyword():
+    with _review_session() as (state, files, fake, xmp):
+        fake.gate(files[0]).set()
+        assert _wait_for(lambda: _current_path(state) == files[0])
+        state.decide("skip")
+        assert _wait_for(lambda: _current_path(state) == files[1])
+        state.decide("crop", {"x1": 5, "y1": 5, "x2": 65, "y2": 45}, 0)
+        assert _wait_for(lambda: xmp.called)
+        args, kwargs = xmp.call_args
+        assert args[:5] == (files[1], 5, 5, 65, 45)
+        assert kwargs["keywords"] == ["AutoCropper", "AutoCropper_Manual"]
+
+
+def test_navigate_to_unbuffered_photo_shows_it_manually():
+    with _review_session(n=5) as (state, files, fake, _):
+        fake.gate(files[0]).set()
+        assert _wait_for(lambda: _current_path(state) == files[0])
+        assert state.navigate(3)
+        assert _wait_for(lambda: _current_path(state) == files[3])
+        assert state.current.get("manual")
+        fake.gate(files[1]).set()  # old generation's in-flight photo
+        fake.gate(files[4]).set()
+        assert _wait_for(lambda: files[4] in fake.started)
+        assert files[3] not in fake.started

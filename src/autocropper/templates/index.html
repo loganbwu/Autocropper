@@ -56,6 +56,7 @@
     <span id="ml-badge">ML</span>
     <span id="noop-badge">no-op</span>
     <span id="no-person-badge">no person</span>
+    <span id="manual-badge" title="Auto-crop wasn't ready; crop starts at the full frame">manual</span>
   </div>
   <div id="key-hints">
     <div class="key-hint"><span class="key-badge">1</span> Keep original</div>
@@ -711,7 +712,9 @@
     document.getElementById('ml-badge').style.display = data.ml_crop ? '' : 'none';
     document.getElementById('noop-badge').style.display = data.noop ? '' : 'none';
     document.getElementById('no-person-badge').style.display = data.no_person ? '' : 'none';
-    document.getElementById('crop-hint-text').textContent = data.ml_crop ? 'Apply ML crop' : 'Apply margin crop';
+    document.getElementById('manual-badge').style.display = data.manual ? '' : 'none';
+    document.getElementById('crop-hint-text').textContent =
+      data.manual ? 'Apply manual crop' : data.ml_crop ? 'Apply ML crop' : 'Apply margin crop';
     syncMlUi(data);
     if (data.total_files) buildFilmstrip(data.total_files);
     if (data.file_idx !== undefined) centreFilmstripOn(data.file_idx);

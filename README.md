@@ -34,6 +34,8 @@ Opens a browser-based review interface. Select a folder of CR3 files, then step 
 
 Before pressing `2`, the crop panel is draggable — click and drag to pan the crop window and fine-tune the framing. The adjusted position is saved to the XMP sidecar.
 
+If you move on to a photo (by deciding or navigating) before its suggested crop has finished, it is shown straight away with the crop initialised to the full frame and a **manual** badge, so you can crop it entirely by hand. Its auto-crop is cancelled: the processor skips it if it hasn't started it yet, or discards the result if it was already part-way through (model inference can't be interrupted safely). The first photo of a session, and the first photo after an ML mode switch, still wait for their suggested crop.
+
 The header controls adjust the prefetch buffer size and crop margin in real time. The buffer indicator shows how many crops are ready (e.g. `4 / 10`); the second number is editable. Accepted crops are written as XMP sidecars immediately; photos already reviewed (XMP with `HasCrop=True`) are skipped on subsequent runs.
 
 #### ML crop mode (web UI)
@@ -72,6 +74,7 @@ Every accepted crop writes the following keywords into the XMP sidecar:
 | `AutoCropper` | Always — marks every photo touched by this tool |
 | `AutoCropper_ML` | When the k-NN ML prediction was used |
 | `AutoCropper_Margin` | When the classic GDINO+SAM geometric crop was used |
+| `AutoCropper_Manual` | When the suggested crop wasn't ready and the crop was made by hand from the full frame |
 
 Existing keywords in the XMP are preserved; new ones are merged in without duplication.
 

@@ -25,7 +25,10 @@ from flask import Flask, Response, jsonify, render_template, request, stream_wit
 from flask.json.provider import DefaultJSONProvider
 
 from .main import (
+    apply_orientation,
     compute_crop,
+    extract_preview_image,
+    get_orientation,
     has_been_reviewed,
     has_existing_crop,
     load_ml_models,
@@ -153,6 +156,15 @@ class ReviewState:
         self._lock = threading.Lock()
         self._producer_gen = 0  # incremented on mode switch; old producer exits, new one starts
         self._producer_thread = None
+        # Manual fallback: once the user has moved on at least once (decided or
+        # navigated), the consumer never waits on the producer — if the next photo
+        # isn't ready it claims it and shows it uncropped for a fully manual crop.
+        # The producer skips claimed photos, or discards the result if it was
+        # already mid-inference on one (inference can't be interrupted safely).
+        self._gen_files = list(files)  # file sequence of the current producer generation
+        self._cursor = 0               # index into _gen_files the producer is working on
+        self._claimed: set = set()     # paths shown manually in this generation
+        self._manual_fallback = False
         self._decided_paths: set = set()  # CR3 paths the user has explicitly accepted or rejected
         self._all_index: dict = {f: i for i, f in enumerate(self.all_files)}
         self._thumb_cache: dict = {}  # file_idx -> JPEG bytes
@@ -166,11 +178,13 @@ class ReviewState:
         """Worker thread. Exits early (without emitting sentinel) when _producer_gen changes."""
 
         try:
-            for cr3 in files:
-                if self._producer_gen != gen:
-                    return
-
+            for i, cr3 in enumerate(files):
                 with self._lock:
+                    if self._producer_gen != gen:
+                        return
+                    self._cursor = i
+                    if cr3 in self._claimed:
+                        continue  # already being cropped manually
                     use_ml = self.ml_mode and self.ml_dataset is not None and _ml_models_ready.is_set()
                     margin = self.margin
                 try:
@@ -182,10 +196,21 @@ class ReviewState:
                     else:
                         result = compute_crop(self.models, cr3, self.all_people, margin_ratio=margin)
                 except Exception as e:
-                    print(f"{_RED}  Warning: skipping {cr3.name} — {e}{_RESET}")
-                    with self._lock:
+                    result = None
+                    error = e
+                else:
+                    error = None
+
+                with self._lock:
+                    claimed = self._producer_gen == gen and cr3 in self._claimed
+                    if error is not None and not claimed:
                         self.skipped += 1
                         self.no_person_skipped += 1
+                if claimed:
+                    print(f"{_DIM}  Discarded: {cr3.name} (cropped manually){_RESET}")
+                    continue
+                if error is not None:
+                    print(f"{_RED}  Warning: skipping {cr3.name} — {error}{_RESET}")
                     _notify_sse()
                     continue
 
@@ -267,11 +292,72 @@ class ReviewState:
             self._prefetch_cv.notify_all()  # wake producer if it was waiting under old limit
         print(f"  Prefetch buffer resized to {n}")
 
+    def _claim_next_locked(self):
+        """Claim the next photo the producer hasn't delivered yet, for manual cropping.
+        Caller holds self._lock. Returns the claimed path, or None if none remain."""
+        files = self._gen_files
+        i = self._cursor
+        while i < len(files) and files[i] in self._claimed:
+            i += 1
+        if i >= len(files):
+            return None
+        self._claimed.add(files[i])
+        return files[i]
+
+    def _manual_item(self, cr3, gen):
+        """Uncropped item for a photo whose auto-crop wasn't ready: preview only,
+        crop initialised to the full frame. No model calls, so safe to run
+        alongside the producer."""
+        import io as _io
+        img = apply_orientation(extract_preview_image(cr3), get_orientation(cr3))
+        w, h = img.size
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=70)
+        return {
+            "cr3_path": cr3,
+            "x1": 0, "y1": 0, "x2": w, "y2": h,
+            "w": w, "h": h,
+            "orig_bytes": buf.getvalue(),
+            "manual": True,
+            "file_idx": self._all_index.get(cr3, 0),
+            "_gen": gen,
+        }
+
+    def _next_result(self):
+        """Next item to present: a prefetched result if one is ready; otherwise,
+        once manual fallback is on, a manual item for the next photo; otherwise
+        wait for the producer."""
+        while True:
+            claim = None
+            with self._lock:
+                try:
+                    result = self._prefetch_q.get_nowait()
+                except queue.Empty:
+                    result = queue.Empty
+                    if self._manual_fallback:
+                        claim = self._claim_next_locked()
+                        gen = self._producer_gen
+            if result is not queue.Empty:
+                with self._prefetch_cv:
+                    self._prefetch_cv.notify()  # one slot freed; let producer continue
+                return result
+            if claim is not None:
+                try:
+                    return self._manual_item(claim, gen)
+                except Exception as e:
+                    print(f"{_RED}  Warning: could not load {claim.name} — {e}{_RESET}")
+                    continue
+            try:
+                result = self._prefetch_q.get(timeout=0.1)
+            except queue.Empty:
+                continue  # re-check: navigate() may have just enabled the fallback
+            with self._prefetch_cv:
+                self._prefetch_cv.notify()
+            return result
+
     def _consumer(self):
         while True:
-            result = self._prefetch_q.get()
-            with self._prefetch_cv:
-                self._prefetch_cv.notify()  # one slot freed; let producer continue
+            result = self._next_result()
 
             if result is None:
                 with self._lock:
@@ -282,13 +368,16 @@ class ReviewState:
 
             with self._lock:
                 stale = result.get("_gen") != self._producer_gen
-            if stale:
+                # A queued result for a photo already shown manually (the producer
+                # enqueued it just after the consumer claimed it) is a duplicate.
+                duplicate = not result.get("manual") and result["cr3_path"] in self._claimed
+            if stale or duplicate:
                 # Leaked from a producer generation superseded by navigate()/ml-mode
                 # switch after this result was already enqueued; drop it silently.
                 continue
 
             with self._lock:
-                if not result.get("ml_crop"):
+                if not result.get("ml_crop") and not result.get("manual"):
                     recompute_crop(result, self.margin)
                 self.current = result
                 self.status = "ready"
@@ -309,7 +398,12 @@ class ReviewState:
                     y1 = coords["y1"] if coords else d["y1"]
                     x2 = coords["x2"] if coords else d["x2"]
                     y2 = coords["y2"] if coords else d["y2"]
-                    method_kw = "AutoCropper_ML" if d.get("ml_crop") else "AutoCropper_Margin"
+                    if d.get("manual"):
+                        method_kw = "AutoCropper_Manual"
+                    elif d.get("ml_crop"):
+                        method_kw = "AutoCropper_ML"
+                    else:
+                        method_kw = "AutoCropper_Margin"
                     write_xmp(d["cr3_path"], x1, y1, x2, y2, d["w"], d["h"],
                               angle=angle or 0,
                               keywords=["AutoCropper", method_kw])
@@ -324,7 +418,16 @@ class ReviewState:
                     print(f"{_DIM}  Declined:  {d['cr3_path'].name}{_RESET}")
                 self.current = None
                 self.status = "loading"
+                self._manual_fallback = True
             _notify_sse()
+
+    def _new_generation_locked(self, files):
+        """Supersede the current producer generation. Caller holds self._lock."""
+        self._producer_gen += 1
+        self._gen_files = list(files)
+        self._cursor = 0
+        self._claimed = set()
+        return self._producer_gen
 
     def navigate(self, file_idx):
         """Jump to file_idx (0-based into self.all_files — the whole folder, not just
@@ -344,20 +447,26 @@ class ReviewState:
             return False
 
         with self._lock:
+            self._manual_fallback = True
             current_item = self.current
             if current_item is not None and current_item.get("file_idx") == file_idx:
                 return True  # already showing the requested photo
             queued = list(self._prefetch_q.queue)  # peek only — consumer is blocked
                                                     # on _decision_q while current_item
                                                     # is set, so this can't race a pop
+            claimed = set(self._claimed)
 
         skip_count = None
-        for i, item in enumerate(queued):
+        presentable = 0  # items the consumer will actually present (and so need a discard)
+        for item in queued:
             if item is None:
                 break  # producer sentinel — nothing buffered beyond this point
+            if item["cr3_path"] in claimed:
+                continue  # the consumer drops these silently, without awaiting a decision
             if item.get("file_idx") == file_idx:
-                skip_count = i
+                skip_count = presentable
                 break
+            presentable += 1
 
         if skip_count is not None:
             # Fast path: already buffered — discard our way to it without touching
@@ -369,10 +478,11 @@ class ReviewState:
             _notify_sse()
             return True
 
-        # Slow path: not buffered — restart the producer from file_idx.
+        # Slow path: not buffered — restart the producer from file_idx. With manual
+        # fallback on, the consumer shows file_idx uncropped straight away and the
+        # new producer starts working on the photos after it.
         with self._lock:
-            self._producer_gen += 1
-            new_gen = self._producer_gen
+            new_gen = self._new_generation_locked(self.all_files[file_idx:])
             self.current = None
             self.status = "loading"
         if current_item is not None:
@@ -434,6 +544,7 @@ class ReviewState:
                 "orig_b64": base64.b64encode(d["orig_bytes"]).decode(),
                 "crop_coords": {"x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"]},
                 "ml_crop": bool(d.get("ml_crop")),
+                "manual": bool(d.get("manual")),
                 "noop": bool(d.get("noop")),
                 "no_person": bool(d.get("no_person")),
                 "ml_mode": self.ml_mode,
@@ -680,6 +791,8 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
             d = state.current
             if d is None:
                 return jsonify({"ok": True})
+            if d.get("manual"):
+                return jsonify({"ok": True})  # no detection to re-derive a crop from
             if not d.get("ml_crop"):
                 recompute_crop(d, margin)
             crop_coords = {"x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"]}
@@ -731,8 +844,11 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 state.ml_dataset = dataset if enabled else None
                 current_item = state.current
                 if old_mode != enabled:
-                    state._producer_gen += 1
-                    new_gen = state._producer_gen
+                    # Start fresh from photo #1 of files the user has not yet decided on.
+                    remaining = [f for f in state.files if f not in state._decided_paths]
+                    new_gen = state._new_generation_locked(remaining)
+                    # Wait for the new mode's crop rather than going straight to manual.
+                    state._manual_fallback = False
                     state.current = None
                     state.status = "loading"
                     # Reset per-pass auto-skip counters so the new producer starts clean.
@@ -757,8 +873,6 @@ def create_app(initial_path: str = "", force: bool = False, all_people: bool = F
                 with state._prefetch_cv:
                     state._prefetch_cv.notify_all()
 
-                # Start fresh from photo #1 of files the user has not yet decided on.
-                remaining = [f for f in state.files if f not in state._decided_paths]
                 state._restart_producer(remaining, new_gen)
                 _notify_sse()
 
