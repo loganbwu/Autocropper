@@ -68,11 +68,16 @@ class TrainingDataset:
     records: list = field(default_factory=list)
     alpha: float = 0.5       # weight: 0 = face distance only, 1 = mask overlap only
     yaw_weight: float = 0.0  # fraction of face component contributed by yaw distance (vs centroid distance)
+    processed_paths: list = field(default_factory=list)  # every source file examined, incl. skipped; used to resume builds
 
     def save(self, path):
+        """Write atomically (temp file + rename) so an interrupted save never corrupts the file."""
         import gzip
-        with gzip.open(path, 'wb', compresslevel=6) as f:
+        import os
+        tmp = f"{path}.tmp"
+        with gzip.open(tmp, 'wb', compresslevel=6) as f:
             pickle.dump(self, f)
+        os.replace(tmp, path)
 
     @classmethod
     def load(cls, path_or_stream, augment_mirrors=True):

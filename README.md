@@ -110,6 +110,8 @@ uv run build-training-dataset ~/path/to/cropped/photos output.pkl
 
 The script runs Grounding DINO + SAM 2.1 + ViTPose on each image and saves a `TrainingDataset` to `output.pkl`. Images where no person or face is detected are skipped.
 
+Builds are resumable. Progress is saved every 20 images (`--checkpoint-every N`) and on Ctrl+C; re-running the same command picks up where it left off, skipping every file already examined (including ones skipped for detection failures). This also means new photos added to the folder can be appended to an existing dataset by re-running. Pass `--fresh` to ignore the existing output and rebuild from scratch.
+
 ### Optimising the alpha weight
 
 ```bash

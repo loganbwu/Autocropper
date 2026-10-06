@@ -20,6 +20,7 @@ detectable face are silently skipped.
 """
 
 import argparse
+from collections import Counter
 from pathlib import Path
 
 from PIL import Image
@@ -76,6 +77,10 @@ def main():
     )
     parser.add_argument("input_folder", type=Path, help="Folder to scan recursively")
     parser.add_argument("output", type=Path, help="Output .pkl file for the training dataset")
+    parser.add_argument("--fresh", action="store_true",
+                        help="Ignore an existing output file and start from scratch")
+    parser.add_argument("--checkpoint-every", type=int, default=20, metavar="N",
+                        help="Save progress every N images (default: 20)")
     args = parser.parse_args()
 
     root = args.input_folder.expanduser().resolve()
@@ -90,57 +95,82 @@ def main():
     cr3_count = sum(1 for p in all_files if p.suffix.lower() in _CR3_SUFFIXES)
     jpg_count = len(all_files) - cr3_count
     print(f"Found {len(all_files)} files ({cr3_count} CR3, {jpg_count} raster).")
+
+    # Resume from an existing output file unless --fresh was given.
+    if args.output.exists() and not args.fresh:
+        dataset = TrainingDataset.load(args.output, augment_mirrors=False)
+        if not hasattr(dataset, "processed_paths"):  # datasets saved before resume support
+            dataset.processed_paths = []
+        done = set(dataset.processed_paths) | {r.source_path for r in dataset.records if r.source_path}
+        dataset.processed_paths = sorted(done)
+        pending = [p for p in all_files if str(p.resolve()) not in done]
+        print(f"Resuming: {len(dataset.records)} records in {args.output}, "
+              f"{len(all_files) - len(pending)} files already processed, {len(pending)} remaining.")
+    else:
+        dataset = TrainingDataset(alpha=0.5)
+        pending = all_files
+
+    if not pending:
+        print("Nothing to do.")
+        return
+
     print("Loading ML models (this may take a moment)...")
     models = load_ml_models()
 
-    records = []
-    skipped_no_crop = 0
-    skipped_no_xmp = 0
-    skipped_detection = 0
-    skipped_unsupported = 0
+    records = dataset.records
+    counts = Counter()
 
-    for path in tqdm(all_files, desc="Building training dataset", unit="image"):
-        try:
-            image, crop = _load_image_and_crop(path)
-        except Exception as e:
-            print(f"  Warning: {path.name} — could not load: {e}")
-            skipped_detection += 1
-            continue
+    try:
+        for i, path in enumerate(tqdm(pending, desc="Building training dataset", unit="image"), 1):
+            counts[_process_file(path, models, records)] += 1
+            dataset.processed_paths.append(str(path.resolve()))
+            if i % args.checkpoint_every == 0:
+                dataset.save(args.output)
+    except KeyboardInterrupt:
+        dataset.save(args.output)
+        print(f"\nInterrupted. Progress saved to {args.output} "
+              f"({len(records)} records). Re-run the same command to resume.")
+        raise SystemExit(130)
 
-        if image is None:
-            if crop == "no_crop":
-                skipped_no_crop += 1
-            elif crop == "no_xmp":
-                skipped_no_xmp += 1
-            else:
-                skipped_unsupported += 1
-            continue
-
-        try:
-            record = build_training_record(image, crop, models, name=path.name,
-                                           source_path=str(path.resolve()))
-        except Exception as e:
-            print(f"  Warning: {path.name} — detection error: {e}")
-            skipped_detection += 1
-            continue
-
-        if record is None:
-            skipped_detection += 1
-            continue
-
-        records.append(record)
-
-    dataset = TrainingDataset(records=records, alpha=0.5)
     dataset.save(args.output)
 
     print(f"\nDone.")
-    print(f"  Records saved:          {len(records)}")
-    print(f"  Skipped (no crop XMP):  {skipped_no_crop}")
-    print(f"  Skipped (unreadable):   {skipped_no_xmp}")
-    print(f"  Skipped (detection):    {skipped_detection}")
-    if skipped_unsupported:
-        print(f"  Skipped (unsupported):  {skipped_unsupported}")
+    print(f"  New records this run:   {counts['ok']}")
+    print(f"  Total records:          {len(records)}")
+    print(f"  Skipped (no crop XMP):  {counts['no_crop']}")
+    print(f"  Skipped (unreadable):   {counts['no_xmp']}")
+    print(f"  Skipped (detection):    {counts['detection']}")
+    if counts["unsupported"]:
+        print(f"  Skipped (unsupported):  {counts['unsupported']}")
     print(f"  Output: {args.output}")
+
+
+def _process_file(path: Path, models, records: list) -> str:
+    """Run detection on one file, appending a record on success.
+
+    Returns "ok" or the skip reason: "no_crop", "no_xmp", "unsupported", "detection".
+    """
+    try:
+        image, crop = _load_image_and_crop(path)
+    except Exception as e:
+        print(f"  Warning: {path.name} — could not load: {e}")
+        return "detection"
+
+    if image is None:
+        return crop
+
+    try:
+        record = build_training_record(image, crop, models, name=path.name,
+                                       source_path=str(path.resolve()))
+    except Exception as e:
+        print(f"  Warning: {path.name} — detection error: {e}")
+        return "detection"
+
+    if record is None:
+        return "detection"
+
+    records.append(record)
+    return "ok"
 
 
 if __name__ == "__main__":
